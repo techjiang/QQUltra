@@ -228,6 +228,9 @@ export class OneBot11Adapter extends Adapter {
       userId: payload.user_id === undefined ? null : String(payload.user_id),
       operatorId: payload.operator_id === undefined ? null : String(payload.operator_id),
       targetId: payload.target_id === undefined ? null : String(payload.target_id),
+      // group_recall 的 message_id 用于事后追查「我们漏了哪条」，
+      // 之前没带出来，撤回通知即使被处理也无从对应到具体消息
+      messageId: payload.message_id === undefined ? null : String(payload.message_id),
       duration: payload.duration,
       timestamp: payload.time ? payload.time * 1000 : Date.now(),
       raw: payload,

@@ -197,6 +197,12 @@ export function createMemberRepo(db) {
       return db.get('SELECT * FROM group_members WHERE group_id = ? AND user_id = ?', String(groupId), String(userId));
     },
 
+    /** 群内登记成员数。用于算活跃占比等「分母」，必须走 COUNT 而不是 list().length。 */
+    countInGroup(groupId) {
+      const row = db.get('SELECT COUNT(*) AS c FROM group_members WHERE group_id = ?', String(groupId));
+      return row?.c ?? 0;
+    },
+
     list(groupId, limit = 50) {
       return db.all(
         'SELECT * FROM group_members WHERE group_id = ? ORDER BY message_count DESC LIMIT ?',

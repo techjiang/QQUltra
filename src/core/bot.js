@@ -13,6 +13,18 @@ import { truncate, normalizeText } from '../utils/text.js';
 import { countWords, renderWordCloudText } from '../services/stats/wordcloud.js';
 import { renderPanel } from '../services/manage/panel.js';
 import { inspectGroupHealth, renderHealthText, evaluateAlert, buildDailyDigest } from '../services/manage/digest.js';
+import {
+  findSilentMembers,
+  renderSilentText,
+  compareTopicTrend,
+  renderTrendText,
+  listNewcomers,
+  renderNewcomersText,
+  auditRules,
+  renderRuleAuditText,
+  summarizeActivity,
+  renderActivityText,
+} from '../services/stats/insight.js';
 import { renderAboutText, PROJECT } from '../assets/brand.js';
 import { VERSION } from '../version.js';
 import { renderWordCloudSvg, renderPanelSvg } from '../services/stats/wordcloud-svg.js';
@@ -103,12 +115,17 @@ const HELP = [
   '/stats [today|week|month|all] [--top=N] — 统计报告',
   '/rank [周期] — 活跃榜',
   '/wordcloud [周期] — 词云图',
+  '/trend [天数] — 话题趋势对比（近 N 天 vs 前 N 天）',
+  '/silent [天数] — 沉默成员（谁不说话了）',
+  '/newcomers [天数] — 新成员观察',
+  '/vibe — 群活跃总览与判断',
   '/me — 我的发言档案',
   '/whois @某人 — 成员档案',
   '/history [@某人] — 最近发言回顾',
   '',
   '🛡 风控（管理员）',
   '/rules — 查看检测规则',
+  '/rules audit — 规则命中效果评估',
   '/violations — 最近违规记录',
   '/alert — 异常预警开关',
   '/rule add <类型> <内容> [--action=mute] | /rule del <id>',
@@ -194,6 +211,20 @@ export function createBot({
   bus.on(EVENTS.NOTICE, async (notice) => {
     if (notice.subType === 'group_increase') {
       await moderator.handleMemberIncrease(notice);
+    } else if (notice.subType === 'group_recall' || notice.subType === 'friend_recall') {
+      // 撤回通知此前完全没有分支——连记录都不留。
+      // 这里不去「修正」统计数据（撤回前的发言确实发生过，删掉明细会让
+      // 历史报表对不上），只做一件事：留痕。
+      // 原因是有两种完全不同的撤回需要区分：管理员清理垃圾（正常）
+      // 与被举报后 QQ 侧强制撤回（往往意味着那条消息本来该被我们的检测拦下）。
+      // 没有留痕就无法回答「我们漏了什么」。
+      storage.kv.set(`last_recall:${notice.groupId ?? notice.userId ?? 'unknown'}`, {
+        messageId: notice.messageId ?? null,
+        userId: notice.userId ?? null,
+        operatorId: notice.operatorId ?? null,
+        at: notice.timestamp ?? Date.now(),
+      });
+      logger.debug(`收到撤回通知 group=${notice.groupId} message=${notice.messageId}`);
     } else if (notice.subType === 'group_decrease') {
       // OneBot 的 group_decrease 把离开者放在 target_id（operator_id 才是操作者），
       // 用 userId 会一直拿到 undefined，汇总永远不会被清理。
@@ -716,6 +747,40 @@ function registerCommands(commands, { storage, config, sessions, aiProvider, log
     },
   });
 
+  commands.register('vibe', {
+    aliases: ['活跃总览', '总览'],
+    description: '群活跃总览与判断',
+    run: ({ storage: s, message }) => renderActivityText(summarizeActivity(s, message.groupId), { groupId: message.groupId }),
+  });
+
+  commands.register('silent', {
+    aliases: ['沉默', '流失'],
+    description: '沉默成员（曾活跃但近期不发言）',
+    run: ({ storage: s, message, args }) => {
+      const days = positiveInt(args.positional[0]) ?? 14;
+      const rows = findSilentMembers(s, message.groupId, { silentDays: days });
+      return renderSilentText(rows, { silentDays: days, groupId: message.groupId });
+    },
+  });
+
+  commands.register('newcomers', {
+    aliases: ['新人'],
+    description: '新成员观察',
+    run: ({ storage: s, message, args }) => {
+      const days = positiveInt(args.positional[0]) ?? 7;
+      return renderNewcomersText(listNewcomers(s, message.groupId, { days }), { days });
+    },
+  });
+
+  commands.register('trend', {
+    aliases: ['趋势', '话题'],
+    description: '话题趋势对比',
+    run: ({ storage: s, message, args }) => {
+      const days = positiveInt(args.positional[0]) ?? 7;
+      return renderTrendText(compareTopicTrend(s, message.groupId, { windowDays: days }));
+    },
+  });
+
   commands.register('me', {
     description: '我的档案',
     run: ({ storage: s, message }) => {
@@ -755,12 +820,18 @@ function registerCommands(commands, { storage, config, sessions, aiProvider, log
 
   commands.register('rules', {
     description: '检测规则',
-    run: ({ storage: s, message }) => {
+    run: ({ storage: s, message, args }) => {
+      // audit 子命令：把「从未命中过的启用规则」挑出来。
+      // 长期运行的群会攒下一堆当时觉得有用的规则，事后从未触发，
+      // 而写坏的正则会一直躺在库里等一个误伤的机会。
+      if (args.positional[0] === 'audit') return renderRuleAuditText(auditRules(s, message.groupId));
       const rules = s.rules.list(message.groupId);
       if (rules.length === 0) return '当前没有自定义规则（内置规则始终生效：刷屏/复读/广告/长文本/链接）';
       return [
         '📋 生效规则',
         ...rules.map((r) => `#${r.id} [${r.type}] ${r.pattern} → ${r.action} 命中${r.hitCount}次 ${r.enabled ? '' : '(已停用)'}`),
+        '',
+        '用 /rules audit 查看哪些规则从未命中。',
       ].join('\n');
     },
   });

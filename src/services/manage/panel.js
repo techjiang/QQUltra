@@ -18,6 +18,10 @@ export const PANEL_SECTIONS = [
       { cmd: '/stats [today|week|month|all]', desc: '统计报告与环比' },
       { cmd: '/rank [周期]', desc: '活跃榜' },
       { cmd: '/wordcloud [周期]', desc: '生成词云图' },
+      { cmd: '/trend [天数]', desc: '话题趋势（变热/变冷）' },
+      { cmd: '/vibe', desc: '活跃总览与判断' },
+      { cmd: '/silent [天数]', desc: '沉默成员（谁不说话了）' },
+      { cmd: '/newcomers [天数]', desc: '新成员观察' },
       { cmd: '/me', desc: '我的发言档案' },
       { cmd: '/whois @某人', desc: '查看成员档案' },
       { cmd: '/history [@某人]', desc: '最近发言回顾' },
@@ -29,6 +33,7 @@ export const PANEL_SECTIONS = [
     items: [
       { cmd: '/alert', desc: '异常预警开关与阈值' },
       { cmd: '/rules', desc: '查看检测规则' },
+      { cmd: '/rules audit', desc: '规则命中效果评估' },
       { cmd: '/violations', desc: '最近违规记录' },
       { cmd: '/rule add <类型> <内容>', desc: '新增规则（管理员）' },
     ],

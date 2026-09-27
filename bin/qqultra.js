@@ -18,6 +18,18 @@ import { renderPanel } from '../src/services/manage/panel.js';
 import { inspectGroupHealth, renderHealthText, buildDailyDigest } from '../src/services/manage/digest.js';
 import { countWords, renderWordCloudText } from '../src/services/stats/wordcloud.js';
 import { disposeTempFiles } from '../src/utils/tempfile.js';
+import {
+  findSilentMembers,
+  renderSilentText,
+  compareTopicTrend,
+  renderTrendText,
+  listNewcomers,
+  renderNewcomersText,
+  auditRules,
+  renderRuleAuditText,
+  summarizeActivity,
+  renderActivityText,
+} from '../src/services/stats/insight.js';
 
 const USAGE = `${ASCII_LOGO}
 
@@ -32,6 +44,7 @@ ${PROJECT.name} v${VERSION} — ${PROJECT.slogan}
   qqultra health [群号]     运行自检并输出健康报告
   qqultra wordcloud <群号>  在终端生成词云（读本地库）
   qqultra digest <群号>     预览每日简报内容
+  qqultra insight <群号>    群运营洞察（活跃总览/沉默成员/话题趋势/新成员/规则效果）
   qqultra inspect          查看当前配置（脱敏）
   qqultra purge [天数]      清理过期消息明细
   qqultra about            作者与项目信息
@@ -72,6 +85,9 @@ try {
       break;
     case 'digest':
       cmdDigest(rest);
+      break;
+    case 'insight':
+      cmdInsight(rest);
       break;
     case 'about':
       console.log(renderAboutText({ version: VERSION }));
@@ -165,6 +181,36 @@ function cmdWordcloud(args) {
     const words = countWords(rows.map((r) => r.text), { top, minCount: 2 });
     console.log(`☁️ ${label}词云（${rows.length} 条消息）\n`);
     console.log(renderWordCloudText(words, { limit: top }));
+  } finally {
+    storage.close();
+  }
+}
+
+/**
+ * 群运营洞察：一次输出全部「判断层」信息。
+ * 与 /vibe、/silent 等群内指令共用同一批纯函数，保证 CLI 和群内口径一致。
+ */
+function cmdInsight(args) {
+  const groupId = args[0];
+  if (!groupId) {
+    console.error('用法：qqultra insight <群号>');
+    process.exitCode = 1;
+    return;
+  }
+  const { storage } = openLocalStorage();
+  try {
+    const sections = [
+      renderActivityText(summarizeActivity(storage, groupId), { groupId }),
+      '',
+      renderSilentText(findSilentMembers(storage, groupId)),
+      '',
+      renderTrendText(compareTopicTrend(storage, groupId)),
+      '',
+      renderNewcomersText(listNewcomers(storage, groupId)),
+      '',
+      renderRuleAuditText(auditRules(storage, groupId)),
+    ];
+    console.log(sections.join('\n'));
   } finally {
     storage.close();
   }

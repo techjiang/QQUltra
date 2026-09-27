@@ -14,6 +14,18 @@ import { renderWordCloudSvg, layoutWords as layoutWordsDirect, estimateTextWidth
 import { sweepStale, writeTempFile, disposeTempFiles, DEFAULT_DIR } from '../src/utils/tempfile.js';
 import { inspectGroupHealth } from '../src/services/manage/digest.js';
 import { evaluateAlert } from '../src/services/manage/digest.js';
+import {
+  findSilentMembers,
+  renderSilentText,
+  compareTopicTrend,
+  renderTrendText,
+  listNewcomers,
+  renderNewcomersText,
+  auditRules,
+  renderRuleAuditText,
+  summarizeActivity,
+  renderActivityText,
+} from '../src/services/stats/insight.js';
 
 /**
  * 发布前的回归集。
@@ -625,5 +637,170 @@ describe('发布就绪检查', () => {
       assert.ok(spec, `面板里的 ${name} 必须在命令表里`);
     }
     storage.close();
+  });
+});
+
+describe('群运营洞察（新增能力）', () => {
+  const DAY = 86_400_000;
+
+  const seedInsight = (storage, now = Date.now()) => {
+    storage.groups.ensure('9527', '测试群');
+    // 沉默成员：历史很活跃，最近 30 天不说话
+    storage.members.markJoined({ groupId: '9527', userId: '30003', nickname: '阿离', timestamp: now - 100 * DAY });
+    storage.db.run('UPDATE group_members SET message_count = 50, last_seen = ? WHERE user_id = ?', now - 30 * DAY, '30003');
+    // 活跃成员
+    storage.members.upsert({ groupId: '9527', userId: '20001', nickname: '甲', timestamp: now });
+    // 新成员：入群 5 天但从没说过话
+    storage.members.markJoined({ groupId: '9527', userId: '30002', nickname: '挂机号', timestamp: now - 5 * DAY });
+    // 本期话题
+    for (let i = 0; i < 10; i += 1) {
+      storage.messages.insert({ groupId: '9527', userId: '20001', nickname: '甲', text: '新赛季 排位 上分', segments: [], timestamp: now - i * 1000 });
+    }
+    // 上期话题
+    for (let i = 0; i < 10; i += 1) {
+      storage.messages.insert({ groupId: '9527', userId: '20001', nickname: '甲', text: '外挂 举报 官方', segments: [], timestamp: now - 8 * DAY - i * 1000 });
+    }
+  };
+
+  test('沉默成员只列出「曾活跃」的人，过滤掉只冒过泡的', () => {
+    const storage = makeStorage();
+    seedInsight(storage);
+    const rows = findSilentMembers(storage, '9527', { silentDays: 14, minMessages: 10 });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].userId, '30003');
+    assert.match(rows[0].silentText, /天/);
+    storage.close();
+  });
+
+  test('无沉默成员时给出明确的正向结论而不是空列表', () => {
+    const storage = makeStorage();
+    storage.groups.ensure('9527');
+    assert.match(renderSilentText(findSilentMembers(storage, '9527')), /没有「沉默的活跃成员」/);
+    storage.close();
+  });
+
+  test('话题趋势用「占比」比较，不受整体消息量波动干扰', () => {
+    // 若直接比绝对次数，本期消息量翻倍会让所有词都显示「变热」；
+    // 占比比较才能区分「话题本身变热」与「群整体更热闹」
+    const storage = makeStorage();
+    seedInsight(storage);
+    const trend = compareTopicTrend(storage, '9527', { windowDays: 7 });
+    assert.ok(trend.fresh.some((t) => t.word === '排位'), '本期新出现的词应归入新话题');
+    assert.ok(trend.gone.some((t) => t.word === '外挂'), '上期有、本期没有的词应归入已消失');
+    assert.equal(trend.cooled.length, 0, '上期词本期为 0 属于「消失」而不是「变冷」');
+    storage.close();
+  });
+
+  test('趋势报告把四类变化都渲染出来，且不隐藏「无变化」结论', () => {
+    const storage = makeStorage();
+    storage.groups.ensure('9527');
+    const text = renderTrendText(compareTopicTrend(storage, '9527'));
+    assert.match(text, /话题趋势/);
+    assert.match(text, /没有明显升降|消息量/);
+    storage.close();
+  });
+
+  test('新成员观察区分「潜水」与「正常」', () => {
+    const storage = makeStorage();
+    seedInsight(storage);
+    const rows = listNewcomers(storage, '9527', { days: 7 });
+    const quiet = rows.filter((r) => r.isQuiet);
+    assert.equal(quiet.length, 1, '入群超 3 天且零发言才算潜水');
+    assert.equal(quiet[0].userId, '30002');
+    assert.match(renderNewcomersText(rows), /尚未发言/);
+    storage.close();
+  });
+
+  test('规则效果评估挑出「启用却从未命中」的规则', () => {
+    // 长期运行的群会攒下一堆当时觉得有用的规则，事后从未触发，
+    // 而写坏的正则一直躺在库里等一个误伤的机会
+    const storage = makeStorage();
+    storage.groups.ensure('9527');
+    storage.rules.add({ groupId: '9527', type: 'keyword', pattern: '从没命中过', action: 'warn' });
+    const used = storage.rules.add({ groupId: '9527', type: 'keyword', pattern: '命中过', action: 'warn' });
+    storage.rules.bumpHit(used.id);
+
+    const rows = auditRules(storage, '9527');
+    assert.equal(rows.find((r) => r.pattern === '从没命中过').suspect, true);
+    assert.equal(rows.find((r) => r.pattern === '命中过').suspect, false);
+    assert.match(renderRuleAuditText(rows), /从未命中过/);
+    storage.close();
+  });
+
+  test('活跃总览按活跃占比给判断，僵尸群能被识别', () => {
+    const storage = makeStorage();
+    storage.groups.ensure('9527');
+    // 10 个成员，本周只有 1 人说话 → 10%
+    for (let i = 0; i < 10; i += 1) {
+      storage.members.markJoined({ groupId: '9527', userId: String(40000 + i), nickname: `成员${i}`, timestamp: Date.now() - 30 * DAY });
+    }
+    const empty = summarizeActivity(storage, '9527');
+    assert.equal(empty.weeklyActive, 0);
+    assert.match(renderActivityText(empty), /还没有人发言/);
+
+    storage.messages.insert({ groupId: '9527', userId: '40000', nickname: '成员0', text: 'hi', segments: [], timestamp: Date.now() });
+    storage.members.upsert({ groupId: '9527', userId: '40000', nickname: '成员0', timestamp: Date.now() });
+    const low = summarizeActivity(storage, '9527');
+    assert.ok(low.vitality > 0 && low.vitality < 0.3);
+    storage.close();
+  });
+
+  test('新指令在群里可用，且都出现在面板里', async () => {
+    const { bot, adapter, storage } = await makeBot();
+    for (const cmd of ['/vibe', '/silent', '/newcomers', '/trend', '/rules audit']) {
+      adapter.clearOutbox();
+      await bot.inject({ groupId: '9527', userId: '20001', nickname: '甲', text: cmd });
+      assert.ok(adapter.lastReply(), `${cmd} 必须有回复`);
+      assert.ok(!/执行失败|undefined/.test(adapter.lastReply()), `${cmd} 不该报内部错误: ${adapter.lastReply()}`);
+    }
+    storage.close();
+  });
+
+  test('中文别名可用', async () => {
+    const { bot, adapter, storage } = await makeBot();
+    for (const cmd of ['/趋势', '/沉默', '/新人', '/活跃总览']) {
+      adapter.clearOutbox();
+      await bot.inject({ groupId: '9527', userId: '20001', nickname: '甲', text: cmd });
+      assert.ok(adapter.lastReply(), `${cmd} 必须能路由到对应命令`);
+    }
+    storage.close();
+  });
+
+  test('群维度新指令在私聊被拒绝', async () => {
+    const { bot, adapter, storage } = await makeBot();
+    await bot.inject({ groupId: null, userId: '20001', text: '/silent' });
+    assert.match(adapter.lastReply(), /群内指令/);
+    storage.close();
+  });
+});
+
+describe('回归：撤回通知必须留痕', () => {
+  test('group_recall 会记录被撤回的消息，便于事后追查漏检', async () => {
+    // 回归：notice 只处理 group_increase/group_decrease，
+    // 撤回通知连记录都不留，于是「我们漏了哪条」永远无从回答
+    const { adapter, storage } = await makeBot();
+    adapter.emitNotice({ subType: 'group_recall', groupId: '9527', userId: '20001', messageId: '555', timestamp: 1_700_000_000_000 });
+    await new Promise((r) => setTimeout(r, 30));
+    const record = storage.kv.get('last_recall:9527', null);
+    assert.ok(record, '撤回必须留痕');
+    assert.equal(record.messageId, '555');
+    assert.equal(record.userId, '20001');
+    storage.close();
+  });
+
+  test('OneBot 适配器把 group_recall 的 message_id 翻译出来', async () => {
+    const { OneBot11Adapter } = await import('../src/adapters/onebot11.js');
+    const adapter = new OneBot11Adapter({});
+    const notice = adapter._translateNotice({
+      notice_type: 'group_recall',
+      group_id: 9527,
+      user_id: 20001,
+      operator_id: 20002,
+      message_id: 12345,
+      time: 1_700_000_000,
+    });
+    assert.equal(notice.subType, 'group_recall');
+    assert.equal(notice.messageId, '12345');
+    assert.equal(notice.operatorId, '20002');
   });
 });
