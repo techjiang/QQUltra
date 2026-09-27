@@ -495,6 +495,15 @@ async function maybeReplyWithAi(ctx, message) {
   await replyWithAi(ctx, message, question, { scopeKey: `group:${message.groupId}` });
 }
 
+/**
+ * 词云标题。图卡版要把「因为排不下而被丢掉」的词数说出来：
+ * 标题写 20 个词、图里只有 7 个，不改口径的话用户只会以为图坏了。
+ */
+function headerOf(label, messageCount, wordCount, dropped = 0) {
+  const tail = dropped > 0 ? `，布局容纳 ${wordCount} 个（${dropped} 个过长未绘入）` : '';
+  return `☁️ ${label}词云（${messageCount} 条消息 / ${wordCount} 个高频词${tail}）`;
+}
+
 function registerCommands(commands, { storage, config, sessions, aiProvider, logger, adapter, startedAt }) {
   commands.register('help', {
     description: '查看帮助',
@@ -571,21 +580,22 @@ function registerCommands(commands, { storage, config, sessions, aiProvider, log
       const words = countWords(rows.map((r) => r.text), { top, minCount: 2 });
       if (words.length === 0) return `${label}语料不足，无法生成词云`;
 
-      const header = `☁️ ${label}词云（${rows.length} 条消息 / ${words.length} 个高频词）`;
       // 先尝试渲染成图片发出去，失败就退回纯文本——不退化的炫技等于故障
-      if (args?.flags?.img === false) return `${header}\n${renderWordCloudText(words)}`;
+      if (args?.flags?.img === false) return `${headerOf(label, rows.length, words.length)}\n${renderWordCloudText(words)}`;
       try {
-        const svg = renderWordCloudSvg(words, { title: `${label}群聊词云` });
+        const rendered = renderWordCloudSvg(words, { title: `${label}群聊词云` });
+        // 图里实际画了几个词要和标题对得上，否则看起来像渲染缺词
+        const header = headerOf(label, rows.length, rendered.placed, rendered.dropped);
         const file = writeTempFile({
           name: `wordcloud-${message.isGroup ? `g${message.groupId}` : `u${message.userId}`}-${Date.now()}.svg`,
-          content: svg,
+          content: rendered.svg,
           logger,
         });
         await (message.isGroup ? ad.sendGroupImage(message.groupId, file) : ad.sendPrivateImage(message.userId, file));
         return null;
       } catch (err) {
         logger.debug(`词云图片发送失败，退回文本: ${err.message}`);
-        return `${header}\n${renderWordCloudText(words)}`;
+        return `${headerOf(label, rows.length, words.length)}\n${renderWordCloudText(words)}`;
       }
     },
   });
@@ -828,13 +838,23 @@ function registerCommands(commands, { storage, config, sessions, aiProvider, log
     description: '问 AI',
     run: async ({ message, args, aiProvider: provider, sessions: sess, storage: s, config: cfg }) => {
       if (!provider) return 'AI 功能未启用（请在配置中设置 ai.enabled 与 ai.apiKey）';
-      const question = args.raw.replace(/^ai\s*/i, '').trim();
+      // 取问句必须从 args.positional 拼，而不是 args.raw。
+      // args.raw 一直是 undefined（parseCommand 把 raw 挂在返回值上，不是挂在 args 上），
+      // 于是这里每次都抛 "Cannot read properties of undefined (reading 'replace')"，
+      // 被命令层兜成「⚠️ Cannot read properties of undefined」——
+      // 旗舰功能 /ai 实际上从未工作过，而且错误信息完全没提 AI。
+      const question = args.positional.join(' ').trim();
       if (!question) return '用法：/ai <你的问题>';
-      const { scopeKey, messages: prompt } = await sess.buildPrompt({ ...message, text: question }, { systemPrompt: cfg.ai.systemPrompt ?? DEFAULT_PERSONA });
+      // contextLines: 0 → /ai 是「点名提问」，不是群聊里接话，
+      // 因此既不注入群上下文，也不写回会话记忆。
+      // （旧代码注释写着「一次性问答不该污染上下文」，但实际调了 remember，
+      //   注释与行为不一致比没有注释更危险：后来的人会按注释理解代码。）
+      const { messages: prompt } = await sess.buildPrompt(
+        { ...message, text: question },
+        { systemPrompt: cfg.ai.systemPrompt ?? DEFAULT_PERSONA, contextLines: 0 },
+      );
       const answer = await provider.chat(prompt);
-      sess.remember(scopeKey, question, answer.content);
-      void s;
-      return truncate(answer.content, 800);
+      return truncate(answer.content, cfg.ai.maxReplyLength ?? 800);
     },
   });
 
@@ -843,7 +863,15 @@ function registerCommands(commands, { storage, config, sessions, aiProvider, log
     run: async ({ message, args, aiProvider: provider, storage: s }) => {
       if (!provider) return 'AI 功能未启用';
       const period = args.positional[0] ?? 'today';
-      const { messages: prompt } = buildStatsAnswerPrompt(s, message.groupId, args.raw.replace(/^ai-stats\s*/i, '').trim() || '总结本群活跃情况并给出一条改进建议', { period });
+      // 同上：args.raw 是 undefined，改用 positional。
+      // 这个 bug 更隐蔽——「改为让消息更可读」这类不影响执行的拼写/格式修正
+      const asked = args.positional.join(' ').trim();
+      const { messages: prompt } = buildStatsAnswerPrompt(
+        s,
+        message.groupId,
+        asked || '总结本群活跃情况并给出一条改进建议',
+        { period },
+      );
       const answer = await provider.chat(prompt);
       return truncate(answer.content, 800);
     },

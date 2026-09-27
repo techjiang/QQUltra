@@ -96,14 +96,14 @@ describe('词云（渲染）', () => {
   });
 
   test('SVG 转义特殊字符，避免破坏文档结构', () => {
-    const svg = renderWordCloudSvg([{ word: '<script>&"', count: 2 }], {});
+    const { svg } = renderWordCloudSvg([{ word: '<script>&"', count: 2 }], {});
     assert.ok(!svg.includes('<script>'));
     assert.ok(svg.includes('&lt;script&gt;'));
     assert.ok(svg.includes('&amp;'));
   });
 
   test('空词表也能渲染出合法 SVG', () => {
-    const svg = renderWordCloudSvg([], {});
+    const { svg } = renderWordCloudSvg([], {});
     assert.match(svg, /^<svg /);
     assert.match(svg, /<\/svg>\s*$/);
   });
