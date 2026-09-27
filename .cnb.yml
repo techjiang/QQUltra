@@ -1,0 +1,22 @@
+main:
+  push:
+    - name: test
+      docker:
+        image: node:22
+      stages:
+        - name: 安装依赖
+          script: npm ci --no-audit --no-fund
+        - name: 运行测试
+          script: npm test
+        - name: 离线链路自检
+          script: node bin/qqultra.js demo
+
+  pull_request:
+    - name: test
+      docker:
+        image: node:22
+      stages:
+        - name: 安装依赖
+          script: npm ci --no-audit --no-fund
+        - name: 运行测试
+          script: npm test

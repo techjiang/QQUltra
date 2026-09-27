@@ -1,0 +1,27 @@
+{
+  "name": "qqultra",
+  "version": "0.1.0",
+  "description": "QQUltra：至尊QQ人工智能、群聊统计、自动化检测、群聊信息管理的高级工具",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "bin": {
+    "qqultra": "./bin/qqultra.js"
+  },
+  "main": "./src/index.js",
+  "scripts": {
+    "start": "node bin/qqultra.js start",
+    "test": "node --test \"test/*.test.js\"",
+    "demo": "node bin/qqultra.js demo"
+  },
+  "keywords": [
+    "qq",
+    "onebot",
+    "chatbot",
+    "llm",
+    "group-stats",
+    "moderation"
+  ]
+}
