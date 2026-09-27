@@ -4,7 +4,7 @@
  */
 export const COMMAND_PREFIX = '/';
 
-export function parseCommand(text, { prefix = COMMAND_PREFIX } = {}) {
+export function parseCommand(text, { prefix = COMMAND_PREFIX, knownSubcommands = new Set() } = {}) {
   const raw = String(text ?? '').trim();
   if (!raw.startsWith(prefix)) return null;
 
@@ -12,8 +12,17 @@ export function parseCommand(text, { prefix = COMMAND_PREFIX } = {}) {
   if (!body) return null;
 
   const parts = body.split(/\s+/);
-  const name = parts[0].toLowerCase();
-  const rest = parts.slice(1);
+  let name = parts[0].toLowerCase();
+  let rest = parts.slice(1);
+
+  // 子命令（如 `disclaimer full`、`rules audit`）本身也是一条注册命令，
+  // 由 registry 用「最长键优先」解析。这里要把紧跟在后的裸词回填进 name，
+  // 否则 resolve('disclaimer') 只命中简版，`/disclaimer full` 会静默降级成简版。
+  // 只在注册表里确实存在该子命令时才回填，避免把 `[周期]`、`--flag` 这类参数吞进命令名。
+  while (rest.length > 0 && knownSubcommands.has(`${name} ${rest[0].toLowerCase()}`)) {
+    name = `${name} ${rest[0].toLowerCase()}`;
+    rest = rest.slice(1);
+  }
 
   const args = { positional: [], flags: {} };
   for (let i = 0; i < rest.length; i += 1) {
@@ -104,6 +113,9 @@ export function createCommandRegistry() {
       const target = ALIASES[key];
       return target ? commands.get(target) : undefined;
     },
+
+    /** 含空格的命令名（子命令），如 `disclaimer full`、`rules audit`。 */
+    subcommandNames: () => [...commands.keys()].filter((k) => k.includes(' ')),
   };
 }
 

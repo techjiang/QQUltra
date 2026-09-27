@@ -25,7 +25,7 @@ import {
   summarizeActivity,
   renderActivityText,
 } from '../services/stats/insight.js';
-import { renderAboutText, PROJECT } from '../assets/brand.js';
+import { renderAboutText, renderDisclaimerText, DISCLAIMER, PROJECT } from '../assets/brand.js';
 import { VERSION } from '../version.js';
 import { renderWordCloudSvg, renderPanelSvg } from '../services/stats/wordcloud-svg.js';
 import { writeTempFile, sweepStale } from '../utils/tempfile.js';
@@ -38,7 +38,7 @@ import { formatDuration } from '../utils/time.js';
  * 拒绝是安全的失败方向；反过来漏登记的指令会拿 groupId=null 去查库，
  * 在群里看起来像功能坏了，而且没人会立刻发现。
  */
-export const PRIVATE_SAFE_COMMANDS = ['help', 'about', 'ping', 'status', 'panel', 'ai', 'ai-stats', 'ai-reset'];
+export const PRIVATE_SAFE_COMMANDS = ['help', 'about', 'disclaimer', 'ping', 'status', 'panel', 'ai', 'ai-stats', 'ai-reset'];
 
 /**
  * 判断一条指令在私聊里是否有意义。
@@ -47,6 +47,14 @@ export const PRIVATE_SAFE_COMMANDS = ['help', 'about', 'ping', 'status', 'panel'
  * 已授权的运维可以私聊 /config keys 或 /rule on 这类不读群数据的操作，
  * 这类操作本身就无群上下文依赖，不该被一刀切拦掉。
  */
+/**
+ * 子命令集合，喂给 parseCommand 做「最长匹配」。
+ * 不这样做的话 `/disclaimer full` 只会命中简版，用户以为看到的是完整条款，其实不是。
+ */
+function subcommandSet(commands) {
+  return new Set(commands.subcommandNames?.() ?? []);
+}
+
 function isGroupOnlyCommand(spec, parsed) {
   if (PRIVATE_SAFE_COMMANDS.includes(spec.name)) return false;
   // 只读群数据的子命令：即使在白名单手里，没有群号也查不出东西
@@ -109,6 +117,8 @@ const HELP = [
   '/panel --img — 面板以图卡形式发送',
   '/status — 运行状态与自检',
   '/about — 作者与项目信息',
+  '/disclaimer — 免责声明与责任限制（简版）',
+  '/disclaimer full — 免责声明（完整七节条款）',
   '/ping — 存活检查',
   '',
   '📊 洞察',
@@ -314,7 +324,9 @@ async function handleMessage(ctx, message) {
 
   if (!storage.groups.isEnabled(message.groupId)) return;
 
-  const parsed = message.text.startsWith(COMMAND_PREFIX) ? parseCommand(message.text) : null;
+  const parsed = message.text.startsWith(COMMAND_PREFIX)
+    ? parseCommand(message.text, { knownSubcommands: subcommandSet(ctx.commands) })
+    : null;
 
   // 群配置只取一次：下面采集/检测/主动服务都要读，重复 withDefaults 会做无谓的深拷贝
   const settings = withDefaults(storage.groups.ensure(message.groupId)?.settings ?? {});
@@ -408,7 +420,7 @@ async function handlePrivateMessage(ctx, message) {
   const { adapter, logger } = ctx;
   const text = normalizeText(message.text).trim();
 
-  const parsed = text.startsWith(COMMAND_PREFIX) ? parseCommand(text) : null;
+  const parsed = text.startsWith(COMMAND_PREFIX) ? parseCommand(text, { knownSubcommands: subcommandSet(ctx.commands) }) : null;
   if (parsed) {
     // 群维度指令在私聊里没有语义：/stats 会拿着 groupId=null 去查库，
     // 回一句「📊 群 null · 今日统计」，看起来像功能坏了。
@@ -548,7 +560,21 @@ function registerCommands(commands, { storage, config, sessions, aiProvider, log
 
   commands.register('about', {
     description: '作者与项目信息',
-    run: () => `${renderAboutText({ version: VERSION })}\n\n数据只落本地 SQLite，不外传。`,
+    run: () => `${renderAboutText({ version: VERSION })}\n\n数据只落本地 SQLite，不外传。\n\n发送 /disclaimer 查看完整免责声明。`,
+  });
+
+  // 免责声明：作者对使用后果不承担责任，因此必须让「使用者知情」可被自助获取，
+  // 而不是只在 README 里躺着——群里的人看不到 README。
+  commands.register('disclaimer', {
+    description: '免责声明与责任限制（简版）',
+    run: () => DISCLAIMER.short.join('\n'),
+  });
+
+  // `disclaimer full` 注册成独立命令：它是完整法律条款，与简版是两条不同的输出。
+  // 注册成独立命令后，/help 与面板的一致性检查才会自动覆盖它。
+  commands.register('disclaimer full', {
+    description: '免责声明（完整七节条款）',
+    run: () => renderDisclaimerText({ version: VERSION }),
   });
 
   commands.register('panel', {
@@ -820,11 +846,7 @@ function registerCommands(commands, { storage, config, sessions, aiProvider, log
 
   commands.register('rules', {
     description: '检测规则',
-    run: ({ storage: s, message, args }) => {
-      // audit 子命令：把「从未命中过的启用规则」挑出来。
-      // 长期运行的群会攒下一堆当时觉得有用的规则，事后从未触发，
-      // 而写坏的正则会一直躺在库里等一个误伤的机会。
-      if (args.positional[0] === 'audit') return renderRuleAuditText(auditRules(s, message.groupId));
+    run: ({ storage: s, message }) => {
       const rules = s.rules.list(message.groupId);
       if (rules.length === 0) return '当前没有自定义规则（内置规则始终生效：刷屏/复读/广告/长文本/链接）';
       return [
@@ -834,6 +856,14 @@ function registerCommands(commands, { storage, config, sessions, aiProvider, log
         '用 /rules audit 查看哪些规则从未命中。',
       ].join('\n');
     },
+  });
+
+  // `rules audit` 注册成独立命令而不是 /rules 的参数分支：
+  // 长期运行的群会攒下一堆当时觉得有用的规则，事后从未触发，
+  // 而写坏的正则会一直躺在库里等一个误伤的机会。
+  commands.register('rules audit', {
+    description: '规则命中效果评估',
+    run: ({ storage: s, message }) => renderRuleAuditText(auditRules(s, message.groupId)),
   });
 
   commands.register('rule', {

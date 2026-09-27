@@ -18,7 +18,8 @@
     "banner": "node bin/qqultra.js about",
     "panel": "node bin/qqultra.js panel --role=admin",
     "health": "node bin/qqultra.js health",
-    "insight": "node bin/qqultra.js insight"
+    "insight": "node bin/qqultra.js insight",
+    "disclaimer": "node bin/qqultra.js disclaimer"
   },
   "keywords": [
     "qq",
@@ -51,6 +52,8 @@
     "docs",
     "qqultra.config.example.json",
     "CHANGELOG.md",
-    "README.md"
+    "README.md",
+    "DISCLAIMER.md",
+    "LICENSE"
   ]
 }

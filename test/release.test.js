@@ -656,7 +656,7 @@ describe('发布就绪检查', () => {
   test('CLI 入口可执行且 help 列出全部命令', async () => {
     const { execFileSync } = await import('node:child_process');
     const out = execFileSync(process.execPath, ['bin/qqultra.js', 'help'], { encoding: 'utf8' });
-    for (const cmd of ['start', 'demo', 'panel', 'report', 'health', 'wordcloud', 'digest', 'inspect', 'purge', 'about']) {
+    for (const cmd of ['start', 'demo', 'panel', 'report', 'health', 'wordcloud', 'digest', 'insight', 'inspect', 'purge', 'about', 'disclaimer']) {
       assert.ok(out.includes(`qqultra ${cmd}`), `help 应列出 ${cmd}`);
     }
   });
@@ -897,5 +897,139 @@ describe('回归：文档里给出的配置示例必须真的能执行', () => {
     assert.equal(welcome.enabled, true);
     assert.equal(welcome.text, '自定义欢迎语', '同段的其它键必须保留');
     storage.close();
+  });
+});
+
+describe('免责声明与责任限制（法律文本不得静默丢失）', () => {
+  /** 压掉空白与 Markdown 强调标记，只留实质文字，用于「文档没漏条款」的比对。 */
+  const flatText = (t) => String(t).replace(/[*_`>\-]/g, '').replace(/\s+/g, '');
+
+  /**
+   * 这一组测的是「声明真的能被看到」，而不是「DISC* 常量存在」。
+   * 起因：仓库此前 package.json 声明 MIT 却没有 LICENSE 文件，
+   * 免责相关内容也一个字都没有——出了问题责任边界无从谈起。
+   * 而声明如果只写在 README 里，群里的人根本看不到，等于没有。
+   */
+  test('群内 /disclaimer 给出简版，并指向完整条款', async () => {
+    const { bot, adapter, storage } = await makeBot();
+    await bot.inject({ groupId: '9527', userId: '20001', text: '/disclaimer' });
+    const reply = adapter.lastReply();
+    assert.match(reply, /免责声明/);
+    assert.match(reply, /作者不承担任何责任/);
+    assert.match(reply, /现状/);
+    assert.match(reply, /本地/);
+    assert.match(reply, /腾讯/);
+    assert.match(reply, /DISCLAIMER\.md/, '简版必须指路完整条款');
+    assert.match(reply, /disclaimer full/);
+    storage.close();
+  });
+
+  test('群内 /disclaimer full 输出全部七节条款', async () => {
+    const { bot, adapter, storage } = await makeBot();
+    await bot.inject({ groupId: '9527', userId: '20001', text: '/disclaimer full' });
+    const reply = adapter.lastReply();
+    for (const t of ['一、软件性质', '二、按现状提供', '三、责任限制', '四、使用者责任', '五、数据与隐私', '六、禁止用途', '七、条款变更']) {
+      assert.ok(reply.includes(t), `完整条款缺少「${t}」`);
+    }
+    assert.match(reply, /AS IS/);
+    assert.match(reply, /已阅读、理解并同意/);
+    storage.close();
+  });
+
+  test('私聊也能查声明（知情入口不能因语境被拦）', async () => {
+    const { bot, adapter, storage } = await makeBot();
+    await bot.inject({ groupId: null, userId: '20001', isGroup: false, text: '/disclaimer' });
+    assert.match(adapter.lastReply(), /免责声明/);
+    storage.close();
+  });
+
+  test('/about 必须指路 /disclaimer（否则没人知道有这个命令）', async () => {
+    const { bot, adapter, storage } = await makeBot();
+    await bot.inject({ groupId: '9527', userId: '20001', text: '/about' });
+    assert.match(adapter.lastReply(), /disclaimer/i);
+    storage.close();
+  });
+
+  test('/help 与面板都必须登记 /disclaimer', async () => {
+    const { bot, adapter, storage } = await makeBot();
+    await bot.inject({ groupId: '9527', userId: '20001', text: '/help' });
+    assert.match(adapter.lastReply(), /\/disclaimer/);
+
+    const { bot: panelBot, adapter: panelAdapter, storage: panelStorage } = await makeBot();
+    await panelBot.inject({ groupId: '9527', userId: '20001', text: '/panel' });
+    assert.match(panelAdapter.lastReply(), /\/disclaimer/);
+    storage.close();
+    panelStorage.close();
+  });
+
+  test('CLI about / version / disclaimer 都带责任提示', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const run = (args) => execFileSync(process.execPath, ['bin/qqultra.js', ...args], { encoding: 'utf8' });
+
+    const help = run(['help']);
+    assert.ok(help.includes('qqultra disclaimer'), 'help 应列出 disclaimer 子命令');
+
+    const disclaimer = run(['disclaimer']);
+    assert.match(disclaimer, /责任限制/);
+    assert.match(disclaimer, /作者不承担任何责任|不对任何直接/);
+    assert.match(disclaimer, /v1\.0/, '应打印声明版本号，便于回溯用户当时看到的是哪一版');
+
+    assert.match(run(['version']), /作者不承担任何责任/);
+    // license 作为别名也要能查到，否则敲 qqultra license 的人只会看到「未知命令」
+    assert.match(run(['license']), /免责声明/);
+  });
+
+  test('法律文本与免责声明是同一份来源（README/群内/CLI 不会各自漂移）', async () => {
+    const { readFileSync, existsSync } = await import('node:fs');
+    const { DISCLAIMER, renderDisclaimerText } = await import('../src/assets/brand.js');
+
+    assert.ok(existsSync('LICENSE'), 'package.json 声明 MIT，LICENSE 文件必须存在');
+    const license = readFileSync('LICENSE', 'utf8');
+    assert.match(license, /MIT License/);
+    assert.match(license, /AS IS|AS IS/);
+    assert.match(license, /NOT affiliated/i);
+    assert.match(license, /techjiang/);
+
+    assert.ok(existsSync('DISCLAIMER.md'), 'DISCLAIMER.md 必须存在');
+    const md = readFileSync('DISCLAIMER.md', 'utf8');
+    for (const s of DISCLAIMER.sections) {
+      assert.ok(md.includes(s.title), `DISCLAIMER.md 缺少章节「${s.title}」`);
+      for (const item of s.items) {
+        // Markdown 会按排版换行，并可能给关键短语加粗；比较时压掉空白与强调标记，
+        // 只比对实质文字，否则「文档排版变了」会误报成「条款丢了」
+        assert.ok(flatText(md).includes(flatText(item).slice(0, 40)), `DISCLAIMER.md 缺少「${item.slice(0, 30)}…」`);
+      }
+    }
+    assert.match(md, new RegExp(`v${DISCLAIMER.version.replace('.', '\\.')}`), 'DISCLAIMER.md 应标注版本号');
+
+    // 群里发出的简版必须是 DISCLAIMER.short 本身，而不是另抄一份
+    const { bot, adapter, storage } = await makeBot();
+    await bot.inject({ groupId: '9527', userId: '20001', text: '/disclaimer' });
+    for (const line of DISCLAIMER.short) assert.ok(adapter.lastReply().includes(line), `群内简版缺少「${line}」`);
+    storage.close();
+
+    // 完整版渲染必须覆盖每一节的每一条，不能因为拼接逻辑漏项
+    const full = renderDisclaimerText({ version: '9.9.9' });
+    for (const s of DISCLAIMER.sections) for (const item of s.items) assert.ok(full.includes(item), `渲染丢失「${item.slice(0, 24)}…」`);
+    assert.match(full, /v9\.9\.9/);
+  });
+
+  test('README 与 FAQ 都保留免责声明入口', async () => {
+    const { readFileSync } = await import('node:fs');
+    const readme = readFileSync('README.md', 'utf8');
+    assert.match(readme, /## 免责声明/, 'README 应有独立的免责声明章节');
+    assert.match(readme, /DISCLAIMER\.md/);
+    assert.match(readme, /作者.*不承担|不承担责任/);
+    assert.match(readme, /不得作为处罚|唯一依据/, '必须点明检测结果不能当唯一依据');
+    assert.match(readme, /- \[免责声明\]\(#免责声明\)/, '目录里要有锚点，否则章节等于藏起来');
+
+    const faq = readFileSync('docs/FAQ.md', 'utf8');
+    assert.match(faq, /## 免责与责任/);
+    assert.match(faq, /DISCLAIMER\.md/);
+
+    const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+    assert.ok(pkg.files.includes('DISCLAIMER.md'), 'npm 包必须带上 DISCLAIMER.md');
+    assert.ok(pkg.files.includes('LICENSE'), 'npm 包必须带上 LICENSE');
+    assert.equal(pkg.scripts.disclaimer, 'node bin/qqultra.js disclaimer');
   });
 });

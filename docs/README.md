@@ -12,6 +12,7 @@
 | 改代码、加功能 | [DEVELOPMENT.md](DEVELOPMENT.md) |
 | 想理解内部结构与取舍 | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | 升级前看变更 | [../CHANGELOG.md](../CHANGELOG.md) |
+| 了解使用风险与责任边界 | [../DISCLAIMER.md](../DISCLAIMER.md) —— 免责声明与责任限制 |
 
 ## 文档约定
 

@@ -33,7 +33,7 @@ export const PANEL_SECTIONS = [
     items: [
       { cmd: '/alert', desc: '异常预警开关与阈值' },
       { cmd: '/rules', desc: '查看检测规则' },
-      { cmd: '/rules audit', desc: '规则命中效果评估' },
+      { cmd: '/rules audit', sub: 'audit', desc: '规则命中效果评估' },
       { cmd: '/violations', desc: '最近违规记录' },
       { cmd: '/rule add <类型> <内容>', desc: '新增规则（管理员）' },
     ],
@@ -66,6 +66,8 @@ export const PANEL_SECTIONS = [
       { cmd: '/panel --img', desc: '面板换成图文卡片' },
       { cmd: '/help', desc: '完整指令说明' },
       { cmd: '/about', desc: '作者与项目信息' },
+      { cmd: '/disclaimer', desc: '免责声明与责任限制（简版）' },
+      { cmd: '/disclaimer full', sub: 'full', desc: '免责声明（完整七节条款）' },
       { cmd: '/ping', desc: '存活检查' },
     ],
   },
@@ -102,5 +104,13 @@ export function renderPanel({ role = 'member', whiteListed = false, groupName = 
  * 新增指令时若忘了登记面板，测试会失败。
  */
 export function panelCommands() {
-  return PANEL_SECTIONS.flatMap((s) => s.items.map((i) => i.cmd.split(/\s+/)[0]));
+  return PANEL_SECTIONS.flatMap((s) =>
+    s.items.map((i) => {
+      // 只有显式标了 `sub` 的才是命令表里的独立命令（如 `disclaimer full`、`rules audit`）；
+      // `/rule add`、`/config set` 的第二段是**参数**，不是命令名，拿去命令表里找必然落空。
+      // 靠空格推断不行——两种写法长得一样，只能由登记方声明。
+      const head = i.cmd.replace(/^\//, '').split(/\s+/)[0];
+      return i.sub ? `${head} ${i.sub}` : head;
+    }),
+  );
 }

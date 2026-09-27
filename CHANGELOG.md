@@ -2,6 +2,45 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布]
+
+### 新增
+
+- **免责声明与责任限制（v1.0）**：新增 [DISCLAIMER.md](DISCLAIMER.md) 七节完整条款
+  （软件性质 / 按现状提供 / 责任限制 / 使用者责任 / 数据与隐私 / 禁止用途 / 条款变更），
+  并补齐仓库此前**缺失的 LICENSE 文件**（`package.json` 一直声明 MIT，但 LICENSE 从未存在）
+- **群内 `/disclaimer` 与 `/disclaimer full`**：群成员可在 PC 端 QQ 里自助查看声明，
+  简版适合群里阅读，完整版输出全部七节条款；已加入 `PRIVATE_SAFE_COMMANDS`（私聊可用）
+- **命令行 `qqultra disclaimer`**（`npm run disclaimer`，`license` 为别名）：
+  终端输出完整条款；`qqultra version` 也带一行「按现状提供，作者不承担任何责任」并指路该命令
+- **`/about`、`/panel`、`/help` 三处同步**：`/about` 末尾指路 `/disclaimer`，
+  面板「🧭 面板」区登记两条声明指令，`/help` 指令一览补上——
+  声明必须能被自助找到，只在 README 里躺着等于没有（群里的人看不到 README）
+- **文案单一来源**：`src/assets/brand.js` 导出 `DISCLAIMER` 与 `renderDisclaimerText()`，
+  README / 群内 / CLI / DISCLAIMER.md 引用同一份条款，改一次全生效，不会各自漏一句
+- **声明带版本号**：`DISCLAIMER.version = '1.0'`；法律文本每次修改都应升版，
+  便于回溯用户当时看到的是哪一版
+
+### 修复
+
+- **子命令被静默降级为父命令**：`parseCommand` 只取首个词做命令名，
+  于是 `/disclaimer full`、`/rules audit` 这类**注册表里真实存在的两条命令**
+  永远只能命中前者——用户以为拿到的是完整条款，实际是简版，且没有任何提示。
+  现在由 registry 提供子命令集合做「最长匹配」，并在 `/help`、面板中把子命令登记为独立条目
+- **面板一致性检查对子命令失效**：`panelCommands()` 用 `split(/\s+/)[0]` 取首段，
+  `/disclaimer full` 被截成 `/disclaimer`，于是「面板覆盖了全部命令」这条检查
+  永远看不到子命令——**检查本身写错比不检查更糟**，它给出的是虚假的绿灯。
+  改为由登记项显式标注 `sub`，参数（`/rule add`、`/config set` 的第二段）不会被误当命令名
+
+### 文档
+
+- **README 新增「免责声明」章节**（替换原来只有一行「MIT」的 License 段）：
+  七条要点浓缩到一屏，并保留「简而言之：风险与后果由使用者承担」的落点；
+  顶部目录、`files` 字段、文档导航表同步收录 DISCLAIMER.md 与 LICENSE
+- **docs/FAQ.md 新增「免责与责任」小节**：作者是否负责、是否需要告知群成员、
+  检测误判谁担责、群内怎么查声明、数据丢了能否找回——五个真实会问出口的问题
+- **docs/README.md** 导航表补一行「了解使用风险与责任边界 → DISCLAIMER.md」
+
 ## [0.4.0] — 2026-09-27
 
 文档完善版。**重写 README 并补齐使用 / 配置 / 开发 / FAQ 四类文档**，

@@ -12,7 +12,7 @@ import { createStorage } from '../src/storage/repositories.js';
 import { loadConfig, summarizeConfig } from '../src/config.js';
 import { createLogger } from '../src/utils/logger.js';
 import { buildGroupReport, renderReportText, resolvePeriod } from '../src/services/stats/report.js';
-import { ASCII_LOGO, renderAboutText, PROJECT, AUTHOR } from '../src/assets/brand.js';
+import { ASCII_LOGO, renderAboutText, renderDisclaimerText, PROJECT, AUTHOR } from '../src/assets/brand.js';
 import { VERSION } from '../src/version.js';
 import { renderPanel } from '../src/services/manage/panel.js';
 import { inspectGroupHealth, renderHealthText, buildDailyDigest } from '../src/services/manage/digest.js';
@@ -48,6 +48,7 @@ ${PROJECT.name} v${VERSION} — ${PROJECT.slogan}
   qqultra inspect          查看当前配置（脱敏）
   qqultra purge [天数]      清理过期消息明细
   qqultra about            作者与项目信息
+  qqultra disclaimer       免责声明与责任限制（软件按现状提供，作者不承担责任）
   qqultra help             显示本帮助
 
 环境变量：
@@ -93,6 +94,10 @@ try {
       console.log(renderAboutText({ version: VERSION }));
       console.log('\n' + ASCII_LOGO);
       break;
+    case 'disclaimer':
+    case 'license':
+      console.log(renderDisclaimerText({ version: VERSION }));
+      break;
     case 'inspect':
       cmdInspect();
       break;
@@ -126,6 +131,7 @@ function printVersion() {
   console.log(`${pkg.name} v${pkg.version} (node ${process.version})`);
   console.log(`${PROJECT.slogan}`);
   console.log(`作者 ${AUTHOR.name} · ${AUTHOR.site} · QQ群 ${AUTHOR.qqGroups.join(' / ')}`);
+  console.log('本软件按「现状」提供，使用风险自负，作者不承担任何责任；详见 qqultra disclaimer');
 }
 
 /** 预览 PC 端 QQ 里会看到的管理面板。 */
