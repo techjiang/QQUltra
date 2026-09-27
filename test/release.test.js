@@ -605,6 +605,43 @@ describe('回归：配置项的群级生效', () => {
   });
 });
 
+describe('性能：预编译语句缓存', () => {
+  test('重复 SQL 复用同一条预编译语句', () => {
+    const db = openDatabase({ file: ':memory:' });
+    migrate(db);
+    db.run('CREATE TABLE perf (v INTEGER)');
+    for (let i = 0; i < 50; i += 1) db.run('INSERT INTO perf (v) VALUES (?)', i);
+    // 迁移与建表本身也会占用缓存条目，所以比较「增量」而不是绝对值
+    const before = db.statementCacheSize();
+    for (let i = 0; i < 100; i += 1) db.get('SELECT COUNT(*) AS c FROM perf');
+    assert.equal(db.statementCacheSize(), before + 1, '同一条 SQL 反复调用只应新增一个缓存条目');
+    db.close();
+  });
+
+  test('出错后把语句踢出缓存，初始化顺序问题可自愈', () => {
+    // 若把报错的语句留在缓存里，后续每次调用都会报同一个错，
+    // 而「表还没建好就先查」这类场景本应在建表后自愈
+    const db = openDatabase({ file: ':memory:' });
+    migrate(db);
+    const before = db.statementCacheSize();
+    assert.throws(() => db.get('SELECT * FROM 不存在的表'));
+    assert.equal(db.statementCacheSize(), before, '报错的语句不应留在缓存里');
+    db.run('CREATE TABLE 不存在的表 (v INTEGER)');
+    assert.doesNotThrow(() => db.get('SELECT * FROM 不存在的表'));
+    db.close();
+  });
+
+  test('缓存有上限，不会随运行时间无限增长', () => {
+    const db = openDatabase({ file: ':memory:' });
+    migrate(db);
+    db.run('CREATE TABLE t (v INTEGER)');
+    for (let i = 0; i < 400; i += 1) db.get(`SELECT ${i} AS v FROM t`);
+    // 到达上限后整体清空并重新累积，因此稳态值不会超过上限
+    assert.ok(db.statementCacheSize() <= 200, `缓存条目应受上限约束，实际 ${db.statementCacheSize()}`);
+    db.close();
+  });
+});
+
 describe('发布就绪检查', () => {
   test('迁移版本号唯一且递增', () => {
     const versions = MIGRATIONS.map((m) => m.version);

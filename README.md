@@ -8,7 +8,7 @@
 
 <img src="https://img.shields.io/badge/Node-%E2%89%A522.5-339933?logo=node.js&logoColor=white" alt="node" />
 <img src="https://img.shields.io/badge/dependencies-0-blue" alt="zero deps" />
-<img src="https://img.shields.io/badge/tests-264%20passing-brightgreen" alt="tests" />
+<img src="https://img.shields.io/badge/tests-267%20passing-brightgreen" alt="tests" />
 <img src="https://img.shields.io/badge/license-MIT-green" alt="license" />
 
 [作者网站](https://docs.asoe.cn) · [论坛](https://forums.asoe.cn/) · [B 站](https://space.bilibili.com/1768832152) · [GitHub](https://github.com/techjiang/)
@@ -287,12 +287,16 @@ src/
 ## 开发
 
 ```bash
-node --test "test/*.test.js"   # 264 个用例
+node --test "test/*.test.js"   # 267 个用例
 npm run demo                   # 离线端到端演示
 ```
 
 零运行时依赖：数据库用 Node 内置 `node:sqlite`，HTTP/WebSocket 用内置 `fetch`/`WebSocket`。
 要求 Node ≥ 22.5（`node:sqlite` 的引入版本）。
+
+单条消息的完整处理（入库 → 检测 → 处置 → 主动服务）实测约 0.66ms。
+存储层对预编译语句做了缓存（每条消息要走十几次结构相同的 SQL，
+每次 `prepare` 都要重新做一遍词法与语法分析），加上缓存后吞吐提升约 30%。
 
 测试覆盖的三个层次：
 
