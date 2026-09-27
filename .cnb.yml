@@ -35,3 +35,29 @@ main:
       docker:
         image: node:22
       stages: *common_stages
+
+# 打 tag 即发 Release，发布说明直接取 CHANGELOG 对应段落。
+# 放在 `$` 兜底分支下：tag_push 属仓库级事件，只有兜底分支能承载。
+$:
+  tag_push:
+    - name: release
+      docker:
+        image: node:22
+      stages:
+        - name: 校验 tag 与 package.json 版本一致
+          script: |
+            # tag 与 package.json 不一致时宁可不发：发出去才发现版本号对不上，
+            # 只能删 Release 重来，而删过的 tag 会永久留在别人本地
+            PKG=$(node -p "require('./package.json').version")
+            if [ "$CNB_BRANCH" != "v$PKG" ]; then
+              echo "tag $CNB_BRANCH 与 package.json 的 v$PKG 不一致，终止发布"
+              exit 1
+            fi
+            echo "版本核对通过：v$PKG"
+        - name: 运行测试
+          script: npm test
+        - name: 发布 Release
+          type: git:release
+          options:
+            tag: $CNB_BRANCH
+            descriptionFromFile: CHANGELOG.md
