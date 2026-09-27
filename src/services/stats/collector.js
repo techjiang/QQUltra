@@ -19,14 +19,18 @@ export function createCollector({ storage, logger }) {
       const isCommand = text.startsWith('/');
 
       try {
+        let deduped = false;
         storage.db.transaction(() => {
           storage.groups.ensure(message.groupId);
           // 明细始终记录（含指令），便于对账与审计
-          storage.messages.insert({ ...message, text, isCommand });
+          const result = storage.messages.insert({ ...message, text, isCommand });
+          deduped = result.deduped;
 
-          // 但成员汇总只统计正常发言：指令是「对机器人下的操作」，
+          // 重放的重复消息不能再累加成员汇总：否则「发言数」会随重放次数增长，
+          // 与明细行数对不上。去重是整条链路的口径问题，不只是明细表的事。
+          // 成员汇总本身只统计正常发言：指令是「对机器人下的操作」，
           // 计进去会让管理员每查一次统计就给自己刷一条发言数
-          if (!isCommand) {
+          if (!isCommand && !deduped) {
             storage.members.upsert({
               groupId: message.groupId,
               userId: message.userId,
@@ -35,6 +39,10 @@ export function createCollector({ storage, logger }) {
             });
           }
         });
+        if (deduped) {
+          logger?.debug(`跳过协议端重放的重复消息 group=${message.groupId} messageId=${message.messageId}`);
+          return { recorded: false, reason: 'deduped' };
+        }
       } catch (err) {
         logger?.error(`消息入库失败: ${err.message}`);
         return { recorded: false, reason: 'storage-error' };

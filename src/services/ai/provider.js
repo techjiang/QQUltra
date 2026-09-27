@@ -23,8 +23,12 @@ export function createOpenAICompatibleProvider({
     model,
     async chat(messages, { signal, temperature: t, maxTokens: mt } = {}) {
       const controller = new AbortController();
+      let externallyAborted = false;
       const timer = setTimeout(() => controller.abort(), timeout);
-      const onAbort = () => controller.abort();
+      const onAbort = () => {
+        externallyAborted = true;
+        controller.abort();
+      };
       signal?.addEventListener('abort', onAbort, { once: true });
 
       try {
@@ -60,7 +64,11 @@ export function createOpenAICompatibleProvider({
           model: data.model ?? model,
         };
       } catch (err) {
-        if (err.name === 'AbortError') throw new Error('AI 请求超时');
+        // 区分「自己超时」与「外部取消」：两者错误名相同，混在一起会把
+        // 「进程退出/调用方主动放弃」报成「AI 请求超时」，排查时方向直接跑偏。
+        if (err.name === 'AbortError') {
+          throw new Error(externallyAborted ? 'AI 请求已取消' : 'AI 请求超时');
+        }
         logger?.warn(`AI 请求失败: ${err.message}`);
         throw err;
       } finally {

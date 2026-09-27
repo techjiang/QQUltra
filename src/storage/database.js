@@ -32,6 +32,10 @@ export function openDatabase({ file = ':memory:', logger } = {}) {
   // 而业务层到处用可选字段，因此统一在入口把 undefined 归一为 null。
   const bind = (params) => (params.some((p) => p === undefined) ? params.map((p) => (p === undefined ? null : p)) : params);
 
+  // 事务嵌套深度与 savepoint 序号
+  let depth = 0;
+  let savepointSeq = 0;
+
   const api = {
     raw: db,
     file,
@@ -57,7 +61,34 @@ export function openDatabase({ file = ':memory:', logger } = {}) {
         throw new StorageError(`SQL 查询失败: ${sql}`, { cause: err });
       }
     },
+    /**
+     * 事务包装。支持嵌套：外层用 BEGIN/COMMIT，内层用 SAVEPOINT。
+     *
+     * SQLite 不允许嵌套 BEGIN（会抛 "cannot start a transaction within a transaction"），
+     * 而业务里已经出现了「collector.record 与 engine.commit 各开一个事务」的写法。
+     * 它们目前恰好不在同一调用栈上，但只要将来有人把两步合成一步（很自然的重构），
+     * 就会在运行期炸掉，且只有真正处理违规消息时才触发。
+     * 用 SAVEPOINT 兜住这个结构性风险。
+     */
     transaction(fn) {
+      if (depth > 0) {
+        const name = `sp_${++savepointSeq}`;
+        depth += 1;
+        db.exec(`SAVEPOINT ${name}`);
+        try {
+          const result = fn(api);
+          db.exec(`RELEASE ${name}`);
+          return result;
+        } catch (err) {
+          db.exec(`ROLLBACK TO ${name}`);
+          db.exec(`RELEASE ${name}`);
+          throw err;
+        } finally {
+          depth -= 1;
+        }
+      }
+
+      depth += 1;
       db.exec('BEGIN');
       try {
         const result = fn(api);
@@ -66,6 +97,8 @@ export function openDatabase({ file = ':memory:', logger } = {}) {
       } catch (err) {
         db.exec('ROLLBACK');
         throw err;
+      } finally {
+        depth -= 1;
       }
     },
     close: () => db.close(),

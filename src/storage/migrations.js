@@ -108,6 +108,38 @@ export const MIGRATIONS = [
     `,
     resolve: null,
   },
+  {
+    version: 4,
+    name: 'dedupe-message-id',
+    /**
+     * 同一 (group_id, message_id) 唯一。
+     *
+     * 为什么必须有：协议端在重连、批量拉历史、心跳抖动时会把同一条消息重放一次
+     * （NapCat / Lagrange 都会）。重放的消息在业务上完全合法，
+     * 所以没有任何校验会拦它，但它会让总消息数、活跃榜、时段分布整体偏大——
+     * 而且偏得很均匀，看起来就像「群变活跃了」，属于最难发现的一类数据失真。
+     *
+     * 只对 message_id 非空的行走唯一约束：私聊/某些协议端不给 message_id，
+     * 那些行（NULL）不能互相冲突。
+     */
+    // 建索引前必须先把历史重复行清掉，否则 CREATE UNIQUE INDEX 直接失败，
+    // 整个迁移事务回滚 → 机器人起不来。老库（v3 及以前）在重放场景下
+    // 必然已经有重复行，所以这是「升级路径」而不是边界情况。
+    sql: `-- 见 resolve：先清理重复再建唯一索引`,
+    resolve: (db) => {
+      // 保留每个 (group_id, message_id) 里 id 最小的那条，其余删除
+      db.run(`
+        DELETE FROM messages
+        WHERE message_id IS NOT NULL
+          AND id NOT IN (
+            SELECT MIN(id) FROM messages WHERE message_id IS NOT NULL GROUP BY group_id, message_id
+          )
+      `);
+      db.exec(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_dedupe ON messages (group_id, message_id) WHERE message_id IS NOT NULL',
+      );
+    },
+  },
 ];
 
 export function migrate(db, { logger } = {}) {

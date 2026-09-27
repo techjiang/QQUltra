@@ -13,9 +13,16 @@ const ACTIVE_ONLY = 'is_command = 0';
 
 export function createMessageRepo(db) {
   return {
+    /**
+     * 写入一条消息明细。
+     *
+     * 带 message_id 的行走 INSERT OR IGNORE + 唯一索引（见迁移 v4）：
+     * 协议端重放同一条消息时会静默去重，而不是把统计口径放大一倍。
+     * @returns {{ changes:number, deduped:boolean }} deduped 为 true 表示这条是重放
+     */
     insert(msg) {
-      return db.run(
-        `INSERT INTO messages (group_id, message_id, user_id, nickname, role, text, segments, raw, is_command, created_at)
+      const res = db.run(
+        `INSERT OR IGNORE INTO messages (group_id, message_id, user_id, nickname, role, text, segments, raw, is_command, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         String(msg.groupId),
         msg.messageId ? String(msg.messageId) : null,
@@ -28,6 +35,7 @@ export function createMessageRepo(db) {
         msg.isCommand ? 1 : 0,
         msg.timestamp,
       );
+      return { changes: Number(res.changes ?? 0), deduped: Number(res.changes ?? 0) === 0 };
     },
 
     countSince(groupId, since, until = Number.MAX_SAFE_INTEGER) {
