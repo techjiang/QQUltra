@@ -229,18 +229,25 @@ export function createMemberRepo(db) {
       return Number(db.run('DELETE FROM group_members WHERE last_seen < ?', cutoff).changes ?? 0);
     },
 
-    /** 明细为空且从未入群登记的成员行（例如只发过指令的人），用于一致性修复。 */
-    removeEmpty(groupId = null) {
-      const where = groupId === null ? '' : ' AND group_id = ?';
-      const params = groupId === null ? [] : [String(groupId)];
-      return Number(
-        db
-          .run(
-            `DELETE FROM group_members WHERE message_count = 0 AND user_id NOT IN (SELECT DISTINCT user_id FROM messages WHERE 1=1${where})${where}`,
-            ...params,
-            ...params,
-          ).changes ?? 0,
+    /**
+     * 清理「汇总里存在、明细里查不到」的成员行，用于一致性修复。
+     *
+     * 只删 message_count = 0 的行：任何有过发言的成员都必须在明细里留下痕迹，
+     * 若明细被清空而汇总还有计数，那是保留策略该处理的事（见 purgeBefore），
+     * 不在这里做——把有计数的成员静默删掉会让 /whois 直接查不到活跃成员。
+     */
+    removeOrphans(groupId) {
+      if (groupId === undefined || groupId === null) {
+        throw new Error('removeOrphans 需要明确的 groupId：全库修复容易误删，不提供默认值');
+      }
+      const res = db.run(
+        `DELETE FROM group_members
+         WHERE group_id = ? AND message_count = 0
+           AND user_id NOT IN (SELECT DISTINCT user_id FROM messages WHERE group_id = ?)`,
+        String(groupId),
+        String(groupId),
       );
+      return Number(res.changes ?? 0);
     },
 
     /**

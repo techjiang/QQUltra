@@ -8,7 +8,7 @@
 
 <img src="https://img.shields.io/badge/Node-%E2%89%A522.5-339933?logo=node.js&logoColor=white" alt="node" />
 <img src="https://img.shields.io/badge/dependencies-0-blue" alt="zero deps" />
-<img src="https://img.shields.io/badge/tests-208%20passing-brightgreen" alt="tests" />
+<img src="https://img.shields.io/badge/tests-264%20passing-brightgreen" alt="tests" />
 <img src="https://img.shields.io/badge/license-MIT-green" alt="license" />
 
 [作者网站](https://docs.asoe.cn) · [论坛](https://forums.asoe.cn/) · [B 站](https://space.bilibili.com/1768832152) · [GitHub](https://github.com/techjiang/)
@@ -106,10 +106,14 @@ node bin/qqultra.js start
 | `/stats [today\|week\|month\|all]` | 所有人 | 统计报告，可加 `--top=N`，支持 `/stats 本周` |
 | `/rank [周期]` | 所有人 | 活跃榜 |
 | `/wordcloud [周期]` | 所有人 | 词云图（SVG 图片，失败自动退回文本） |
+| `/trend [天数]` | 所有人 | 话题趋势：近 N 天 vs 前 N 天 |
+| `/vibe` | 所有人 | 活跃总览与判断 |
+| `/silent [天数]` | 所有人 | 沉默成员（谁不说话了） |
+| `/newcomers [天数]` | 所有人 | 新成员观察 |
 | `/me` | 所有人 | 我的发言档案 |
 | `/whois @某人` | 所有人 | 查他人档案 |
 | `/history [@某人]` | 所有人 | 最近发言回顾，可加 `--n=5` |
-| `/rules` | 所有人 | 查看生效规则 |
+| `/rules` / `/rules audit` | 所有人 | 查看生效规则 / 规则命中效果评估 |
 | `/violations` | 管理员 | 最近违规记录 |
 | `/alert [on\|off\|threshold N]` | 管理员 | 异常预警开关与阈值 |
 | `/subscribe` `/unsubscribe` | 管理员 | 每日简报订阅 |
@@ -190,6 +194,34 @@ AI 走 **OpenAI 兼容协议**（`/chat/completions`），因此 DeepSeek、通�
 中文靠 bigram 抓「排位」「更新」这类高频组合，精度不如成熟分词但完全确定性、可单测。
 副作用是会产出跨词边界的噪声词（`排位上分` → `位上`），靠 `minCount` 过滤。
 
+## 群运营洞察
+
+统计只回答「有多少消息、谁在说话」。真正需要人做决定的判断在另一层：
+**谁不说话了、话题在变热还是变冷、有没有规则在空转。**
+
+```
+/vibe              群活跃总览：今日/本周/本月 + 周活跃占比 + 一句判断
+/silent 14         沉默成员：累计发言 ≥10 条但最近 14 天没说话的人
+/trend 7           话题趋势：近 7 天 vs 前 7 天，分「变热/新话题/变冷/已消失」
+/newcomers 7       新成员观察：区分「潜水新成员」与「正常新人」
+/rules audit       规则效果：挑出启用却从未命中的规则
+```
+
+命令行等价入口（读本地库，不需要 QQ 环境）：
+
+```bash
+node bin/qqultra.js insight <群号>   # 一次输出上面全部内容
+```
+
+几个刻意的设计：
+
+- **沉默成员用「历史发言 ≥10 条」做门槛**：只冒过一两次泡的人不算流失，
+  而一个曾经活跃的人突然安静 14 天，才是值得有人去问一句的信号
+- **话题趋势比「占比」而不是比「次数」**：群消息量本身波动很大（节假日能翻倍），
+  直接比次数会把「群变热闹」误读成「这个话题变热」
+- **规则效果评估专门挑「从未命中」**：长期运行的群会攒下一堆当时觉得有用的规则，
+  没人会主动删。而一条写坏的正则只会安静地躺在库里，等一个误伤正常聊天的机会
+
 ## 群内配置
 
 每个群可独立配置，互不影响：
@@ -244,18 +276,18 @@ src/
 ├── adapters/     onebot11（正向/反向）、mock（离线用）
 ├── assets/       Logo 与作者信息（唯一来源）
 ├── services/
-│   ├── stats/    采集器、报表、词云、SVG 渲染
+│   ├── stats/    采集器、报表、词云、SVG 渲染、运营洞察
 │   ├── detect/   规则、默认配置、检测引擎
 │   ├── ai/       会话管理、OpenAI 兼容 provider
 │   └── manage/   指令、群配置、处置执行、管理面板、巡检简报
 ├── storage/      数据库、迁移、仓储
-└── utils/        日志、文本归一化、时间
+└── utils/        日志、文本归一化、时间、临时文件生命周期
 ```
 
 ## 开发
 
 ```bash
-node --test "test/*.test.js"   # 208 个用例
+node --test "test/*.test.js"   # 264 个用例
 npm run demo                   # 离线端到端演示
 ```
 
@@ -267,6 +299,8 @@ npm run demo                   # 离线端到端演示
 - **单元**：文本归一化、时间计算、命令解析、各检测器、切词与排版
 - **模块**：存储事务、统计口径、检测引擎决策、AI 提示词、面板权限、健康自检
 - **端到端**：一条消息从注入到被统计、检测、处置、留痕的完整链路
+- **发布回归**（`test/release.test.js`）：把每个修过的缺陷固定成断言，
+  注释里写清「原来错在哪」，避免后来的人改回去
 
 ## 隐私边界
 
@@ -274,6 +308,7 @@ npm run demo                   # 离线端到端演示
 - 机器人自身消息不入库
 - 数据只落本地 SQLite，不外传；AI 回复时仅发送当前会话上下文与提问
 - 可用 `stats.enabled: false` 关闭统计，或 `/purge` 清理历史
+- 出图用的临时文件登记 10 分钟 TTL，进程退出时清理；上次遗留的会在启动时回收
 
 ## 作者
 
