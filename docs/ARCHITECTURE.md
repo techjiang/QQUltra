@@ -1,5 +1,8 @@
 # 架构说明
 
+> 想动手改代码先看 [DEVELOPMENT.md](DEVELOPMENT.md)（环境、测试、扩展步骤）。
+> 这篇讲的是「为什么这么分」，以及改动时不能破坏的约定。
+
 ## 分层
 
 ```
@@ -95,6 +98,12 @@ engine.commit(message, findings, decision, { executed });    // 留痕
     表现为「通知处理器好像没生效」。现在抛 TypeError。
 11. **用户输入错误不用异常语气**：参数不合法抛带 `expected: true` 的错误，
     上层渲染成用法提示而不是「指令执行失败」。
+12. **消息按 `(群号, message_id)` 去重**：协议端在重连与拉历史时会重放消息，
+    重放的消息业务上完全合法，没有任何字段能看出异常，但会让统计口径均匀偏大。
+    `message_id` 为 NULL 的行放行（私聊与部分协议端不给 id）。
+13. **私聊按「群专属」白名单处理**：未登记进 `PRIVATE_SAFE_COMMANDS` 的指令在私聊里默认被拒。
+    用白名单而不是黑名单——新增指令时忘了登记，默认方向是「拒绝」；反过来漏登记的指令
+    会拿 `groupId=null` 去查库，返回一份看起来像坏了、但没人会立刻发现的假报告。
 
 ## 数据模型
 
@@ -156,6 +165,19 @@ commands.register('mytool', {
 继承 `Adapter`，实现 `_connect` / `_send` / `_disconnect`，
 把平台事件翻译成 `normalizeMessage` 后调用 `emitMessage`。
 不要动业务模块。
+
+> 每个扩展点的完整步骤、入参契约与测试写法见 [DEVELOPMENT.md](DEVELOPMENT.md#代码地图)。
+
+### 文档与代码的对应关系
+
+| 改动 | 必须同步的地方 |
+| --- | --- |
+| 新增群内指令 | `bot.js` 注册 + `panel.js` 的 `PANEL_SECTIONS`（漏登记测试会失败）+ [USAGE.md](USAGE.md) |
+| 新增 CLI 子命令 | `bin/qqultra.js` 的 switch + `USAGE` 常量（`.cnb.yml` 有 grep 冒烟）+ [README](../README.md#cli-命令) |
+| 新增全局配置项 | `config.js` 的 `DEFAULT_CONFIG` + `qqultra.config.example.json` + [CONFIG.md](CONFIG.md) |
+| 新增群级配置项 | `group-config.js` 的 `SETTABLE_KEYS` + `GROUP_SETTINGS_DEFAULTS` + [CONFIG.md](CONFIG.md) |
+| 新增检测器 | `rules.js` 的 `BUILTIN_DETECTORS` + `RULE_TYPES` + `defaults.js` + [CONFIG.md](CONFIG.md#检测默认值速查) |
+| 用户可见的行为变化 | `CHANGELOG.md`（写清「原来错在哪」）+ 相关文档 |
 
 
 ## 本轮增强的关键设计
