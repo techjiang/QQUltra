@@ -58,10 +58,20 @@ export function inspectGroupHealth({ storage, groupId, now = Date.now(), lastRea
     checks.push({ name: '连接', level: HEALTH_LEVELS.WARN, detail: '尚无就绪记录，可能是首次启动' });
   }
 
-  // 5. 数据保留策略是否覆盖了统计周期
+  // 5. 数据保留策略是否覆盖了统计周期。
+  // 保留策略没跑过时也要报出来：统计口径和明细口径不一致的根因往往就在这里，
+  // 而「没显示这一项」在旧实现里和「不需要这一项」看起来一模一样。
   const retention = storage.kv.get('retention_days', null);
-  if (retention !== null) {
-    checks.push({ name: '数据保留', level: HEALTH_LEVELS.OK, detail: `明细保留 ${retention} 天` });
+  const lastRun = storage.kv.get('retention_last_run_at', null);
+  if (retention !== null && lastRun !== null) {
+    const stale = now - lastRun > 36 * 3600_000;
+    checks.push({
+      name: '数据保留',
+      level: stale ? HEALTH_LEVELS.WARN : HEALTH_LEVELS.OK,
+      detail: stale ? `明细保留 ${retention} 天，但已超过 36 小时未执行清理` : `明细保留 ${retention} 天（${formatDuration(now - lastRun)}前执行）`,
+    });
+  } else {
+    checks.push({ name: '数据保留', level: HEALTH_LEVELS.WARN, detail: '尚未执行过保留清理，明细会持续增长' });
   }
 
   const worst = checks.some((c) => c.level === HEALTH_LEVELS.BAD)

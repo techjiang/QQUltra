@@ -52,11 +52,26 @@ export async function createApp({ file, env } = {}) {
   };
 }
 
-/** 数据保留清理：按 retentionDays 删除过期明细，返回清理条数。 */
-export function runRetention(storage, { retentionDays, logger } = {}) {
-  const cutoff = Date.now() - retentionDays * 86400_000;
+/**
+ * 数据保留清理：按 retentionDays 删除过期明细。
+ *
+ * 三件事必须一起做，否则「清了多少」和「库里还剩什么」对不上：
+ * 1. 删过期消息明细
+ * 2. 删过期违规记录
+ * 3. 清理明细已删但汇总仍在的成员行（否则 /whois 会一直展出「幽灵成员」）
+ * 4. 把实际生效的保留天数写进 kv —— /status 的「数据保留」自检项依赖它，
+ *    之前这个键从来没被写入过，于是那一项永远不会显示，
+ *    运维以为自己在跑保留策略，实际上无从确认。
+ */
+export function runRetention(storage, { retentionDays, logger, now = Date.now() } = {}) {
+  const cutoff = now - retentionDays * 86400_000;
   const messages = storage.messages.purgeBefore(cutoff);
   const violations = storage.violations.purgeBefore(cutoff);
-  logger?.info(`保留策略：清理 ${messages} 条消息、${violations} 条违规记录`);
-  return { messages, violations };
+  const members = storage.members.purgeBefore(cutoff);
+  storage.kv.set('retention_days', retentionDays);
+  storage.kv.set('retention_last_run_at', now);
+  logger?.info(
+    `保留策略：清理 ${messages} 条消息、${violations} 条违规、${members} 条空成员汇总（保留 ${retentionDays} 天）`,
+  );
+  return { messages, violations, members };
 }

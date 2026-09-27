@@ -49,6 +49,17 @@ export function parseCommand(text, { prefix = COMMAND_PREFIX } = {}) {
 }
 
 /** 从消息段里找 @ 目标，命令里带 @ 时用它拿 userId。 */
+/** 命令可用的旗标白名单：出现未知旗标说明用户打错了，必须报错而不是当参数吞掉。 */
+export const KNOWN_FLAGS = {
+  stats: ['top', 'period'],
+  rank: ['top', 'period'],
+  wordcloud: ['top', 'period', 'img'],
+  history: ['n'],
+  violations: ['n'],
+  panel: ['img'],
+  purge: ['dry'],
+};
+
 export function extractMentions(segments = []) {
   return segments.filter((s) => s?.type === 'at' && s.data?.qq && s.data.qq !== 'all').map((s) => String(s.data.qq));
 }

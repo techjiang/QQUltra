@@ -2,7 +2,8 @@ import { createEventBus, EVENTS } from './events.js';
 import { createLogger } from '../utils/logger.js';
 import { createCollector } from '../services/stats/collector.js';
 import { buildGroupReport, renderReportText, buildMemberProfile, renderMemberText, resolvePeriod } from '../services/stats/report.js';
-import { createDetectEngine } from '../services/detect/engine.js';
+import { createDetectEngine, DEFAULT_DETECT_CONFIG } from '../services/detect/engine.js';
+import { compileRegex, RULE_TYPES } from '../services/detect/rules.js';
 import { createModerator } from '../services/manage/moderation.js';
 import { createCommandRegistry, parseCommand, extractMentions, COMMAND_PREFIX } from '../services/manage/commands.js';
 import { withDefaults, describeSettings, applySetting, SETTABLE_KEYS } from '../services/manage/group-config.js';
@@ -19,6 +20,77 @@ import { writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { formatDuration } from '../utils/time.js';
+
+/**
+ * 私聊里明确可用的指令（其余指令默认按「群专属」处理）。
+ *
+ * 用白名单而不是黑名单：新增指令时若忘了登记，默认是「私聊拒绝」——
+ * 拒绝是安全的失败方向；反过来漏登记的指令会拿 groupId=null 去查库，
+ * 在群里看起来像功能坏了，而且没人会立刻发现。
+ */
+export const PRIVATE_SAFE_COMMANDS = ['help', 'about', 'ping', 'status', 'panel', 'ai', 'ai-stats', 'ai-reset'];
+
+/**
+ * 判断一条指令在私聊里是否有意义。
+ *
+ * 除了白名单，还要看调用者有没有「把群号写进参数」的能力：
+ * 已授权的运维可以私聊 /config keys 或 /rule on 这类不读群数据的操作，
+ * 这类操作本身就无群上下文依赖，不该被一刀切拦掉。
+ */
+function isGroupOnlyCommand(spec, parsed) {
+  if (PRIVATE_SAFE_COMMANDS.includes(spec.name)) return false;
+  // 只读群数据的子命令：即使在白名单手里，没有群号也查不出东西
+  if (spec.name === 'config') return parsed.args.positional[0] === undefined || parsed.args.positional[0] === 'set';
+  if (spec.name === 'rule') return parsed.args.positional[0] === 'add' || parsed.args.positional[0] === 'del' || parsed.args.positional[0] === 'rm';
+  return true;
+}
+
+/**
+ * 校验 /rule add 的输入。
+ *
+ * 只允许两种可被检测器真正识别的类型（keyword / regex），
+ * 并在写入前把正则编译一次——编译不过的规则是「死规则」，
+ * 写进库里只会让人以为已经拦住了。
+ */
+function validateRuleInput(type, pattern) {
+  const normalized = String(type).toLowerCase();
+  if (!['keyword', 'regex'].includes(normalized)) {
+    return { ok: false, message: `未知规则类型「${type}」，只能是 keyword（关键词）或 regex（正则）` };
+  }
+  if (pattern.trim() === '') {
+    return { ok: false, message: '规则内容不能为空' };
+  }
+  if (normalized === 'regex') {
+    const compiled = compileRegex(pattern);
+    if (!compiled) return { ok: false, message: `正则表达式无效：${pattern}（无法编译，请检查括号与转义）` };
+  }
+  return { ok: true, type: normalized };
+}
+
+/**
+ * 解析非负整数旗标。
+ * 抽出来是因为 `Number(x) || fallback` 这个写法有坑：Number(true) === 1，
+ * 于是 `--top`（不带值）会静默变成 1，`--top abc` 也会变成 1，
+ * 用户看到的是「结果不对但没报错」。
+ * @returns {number|undefined} 非法输入返回 undefined，由调用方决定报错还是用默认值
+ */
+function positiveInt(raw) {
+  if (raw === undefined || raw === null || raw === true) return undefined;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
+/** --top 的统一解析：显式非法时抛可预期错误，缺省用默认值。 */
+function parseTop(raw, fallback) {
+  if (raw === undefined) return fallback;
+  const n = positiveInt(raw);
+  if (n === undefined) {
+    const err = new Error(`--top 需要正整数，收到「${raw === true ? '(空)' : raw}」`);
+    err.expected = true;
+    throw err;
+  }
+  return n;
+}
 
 const HELP = [
   '🤖 QQUltra 指令一览',
@@ -71,7 +143,21 @@ export function createBot({
   const bus = createEventBus({ logger });
   const collector = createCollector({ storage, logger });
   const detectEngine = createDetectEngine({ storage, logger, config: config.detect });
-  const moderator = createModerator({ storage, adapter, logger, config: { muteSeconds: 600 } });
+  // moderator 的兜底参数来自全局 detect 默认值，而不是各写一个魔法数字。
+  // 曾经这里写死 { muteSeconds: 600 }，于是群配置里的 incidentWindowMs 根本传不进来：
+  // /config set detect.punish.incidentWindowMs 改完毫无效果，且没有任何地方会报错。
+  const moderator = createModerator({
+    storage,
+    adapter,
+    logger,
+    config: {
+      muteSeconds: DEFAULT_DETECT_CONFIG.punish.muteSeconds,
+      incidentWindowMs: DEFAULT_DETECT_CONFIG.punish.incidentWindowMs,
+      resolveIncidentWindowMs: (groupId) =>
+        withDefaults(storage.groups.get(groupId)?.settings ?? {}).detect?.punish?.incidentWindowMs ??
+        DEFAULT_DETECT_CONFIG.punish.incidentWindowMs,
+    },
+  });
   const commands = createCommandRegistry();
   const sessions = createSessionManager({ storage, logger });
 
@@ -292,6 +378,21 @@ async function handlePrivateMessage(ctx, message) {
 
   const parsed = text.startsWith(COMMAND_PREFIX) ? parseCommand(text) : null;
   if (parsed) {
+    // 群维度指令在私聊里没有语义：/stats 会拿着 groupId=null 去查库，
+    // 回一句「📊 群 null · 今日统计」，看起来像功能坏了。
+    // 与其返回一个「群 null」的假报告，不如直接说清怎么用。
+    //
+    // 顺序很重要：先判定权限。未授权的人问 /purge，该看到的是「需要权限」，
+    // 而不是「这是群内指令」——后者会让对方以为只要换个地方就能用。
+    const spec = ctx.commands.resolve(parsed.name);
+    const allowed = spec ? ctx.commands.canRun(spec, message, ctx.config.permission) : false;
+    if (spec && allowed && isGroupOnlyCommand(spec, parsed)) {
+      await adapter.sendPrivateMessage(
+        message.userId,
+        `⚠️ /${spec.name} 是群内指令，请在群里使用（私聊可用：${PRIVATE_SAFE_COMMANDS.map((c) => `/${c}`).join(' ')}）`,
+      );
+      return;
+    }
     await runCommand(ctx, message, parsed);
     return;
   }
@@ -457,8 +558,11 @@ function registerCommands(commands, { storage, config, sessions, aiProvider, log
     run: async ({ message, args, storage: s, adapter: ad }) => {
       const period = args.positional[0] ?? 'week';
       const { since, until, label } = resolvePeriod(period, message.timestamp);
-      const rows = s.messages.recentInGroup(message.groupId, since, 2000).filter((r) => r.created_at < until);
-      const words = countWords(rows.map((r) => r.text), { top: 20, minCount: 2 });
+      const top = Math.min(positiveInt(args.flags.top) ?? 20, 50);
+      // recentWindow 同时带 until 上界与「排除指令」过滤：
+      // 词云是给成员看的话题画像，把 /wordcloud、--top 这类指令词算进去会污染结果。
+      const rows = s.messages.recentWindow(message.groupId, since, until, 5000);
+      const words = countWords(rows.map((r) => r.text), { top, minCount: 2 });
       if (words.length === 0) return `${label}语料不足，无法生成词云`;
 
       const header = `☁️ ${label}词云（${rows.length} 条消息 / ${words.length} 个高频词）`;
@@ -481,12 +585,13 @@ function registerCommands(commands, { storage, config, sessions, aiProvider, log
     description: '最近发言回顾',
     run: ({ message, mentions, args, storage: s }) => {
       const target = mentions[0] ?? args.positional.find((p) => /^\d+$/.test(p)) ?? null;
-      const limit = Math.min(Number(args.flags.n ?? 5) || 5, 20);
+      const limit = Math.min(positiveInt(args.flags.n) ?? 5, 20);
       if (target) {
         const rows = s.messages.lastMessages(message.groupId, target, limit);
         if (rows.length === 0) return `没有找到 ${target} 的发言记录`;
         return [`🕓 ${target} 最近 ${rows.length} 条发言`, ...rows.map((r) => `· ${truncate(r.text, 60)}`)].join('\n');
       }
+      // 排除指令：否则这条回顾的第一行永远是「刚才那条 /history」本身
       const rows = s.messages.recentInGroup(message.groupId, Date.now() - 24 * 3600_000, limit);
       if (rows.length === 0) return '近 24 小时没有群消息记录';
       return ['🕓 近 24 小时最新发言', ...rows.map((r) => `${r.nickname || r.user_id}：${truncate(r.text, 50)}`)].join('\n');
@@ -497,7 +602,7 @@ function registerCommands(commands, { storage, config, sessions, aiProvider, log
     description: '最近违规记录',
     level: 'admin',
     run: ({ message, storage: s, args }) => {
-      const want = Math.min(Number(args.flags.n ?? 10) || 10, 30);
+      const want = Math.min(positiveInt(args.flags.n) ?? 10, 30);
       // 按「事件」展示而不是按「命中行」：一次广告会命中 ad + newbie_shill 并写一条 punish 摘要，
       // 按行展示会让 --n 10 只装得下 3 次真实违规，且同一事件重复出现三遍。
       const rows = s.violations.incidents(message.groupId, want);
@@ -564,7 +669,8 @@ function registerCommands(commands, { storage, config, sessions, aiProvider, log
     description: '群聊统计',
     run: ({ storage: s, message, args }) => {
       const period = args.positional[0] ?? 'today';
-      const top = Number(args.flags.top ?? 10);
+      // --top 非法时不再静默退回 1（Number(true) === 1），而是给出明确用法
+      const top = parseTop(args.flags.top, 10);
       const report = buildGroupReport(s, message.groupId, { period, top });
       return renderReportText(report);
     },
@@ -575,7 +681,7 @@ function registerCommands(commands, { storage, config, sessions, aiProvider, log
     description: '活跃榜',
     run: ({ storage: s, message, args }) => {
       const period = args.positional[0] ?? 'today';
-      const report = buildGroupReport(s, message.groupId, { period, top: Number(args.flags.top ?? 10) });
+      const report = buildGroupReport(s, message.groupId, { period, top: parseTop(args.flags.top, 10) });
       if (report.topUsers.length === 0) return `${report.period.label}暂无发言记录`;
       return [`🏆 ${report.period.label}活跃榜`, ...report.topUsers.map((u) => `${u.rank}. ${u.nickname} — ${u.count} 条`)].join('\n');
     },
@@ -639,7 +745,17 @@ function registerCommands(commands, { storage, config, sessions, aiProvider, log
         if (!type || patternParts.length === 0) return '用法：/rule add <keyword|regex> <内容> [--action=warn|mute|kick]';
         const action = args.flags.action ?? 'warn';
         if (!['warn', 'mute', 'kick'].includes(action)) return '--action 只能是 warn/mute/kick';
-        const rule = s.rules.add({ groupId: message.groupId, type, pattern: patternParts.join(' '), action });
+
+        // 类型与正则都必须当场校验。
+        // 曾经 /rule add keywrod 词 会「✅ 已添加规则」，但 keywrod 不在检测器识别的
+        // 类型里，规则永远不生效；/rule add regex [未闭合 同样入库成功，
+        // 而 compileRegex 只返回 null。两种情况都没有任何报错，
+        // 表现为「配了规则但垃圾消息照样过」——最难排查的一类故障。
+        const pattern = patternParts.join(' ');
+        const validation = validateRuleInput(type, pattern);
+        if (!validation.ok) return validation.message;
+
+        const rule = s.rules.add({ groupId: message.groupId, type: validation.type, pattern, action });
         return `✅ 已添加规则 #${rule.id} [${rule.type}] ${rule.pattern} → ${rule.action}`;
       }
       if (sub === 'del' || sub === 'rm') {
@@ -680,7 +796,12 @@ function registerCommands(commands, { storage, config, sessions, aiProvider, log
       const cutoff = Date.now() - days * 86400_000;
       const removed = s.messages.purgeBefore(cutoff);
       s.violations.purgeBefore(cutoff);
-      return `🧹 已清理 ${days} 天前的 ${removed} 条消息明细`;
+      // 汇总表要跟着清理：只删明细会让 /whois、成员列表继续展示
+      // 一个「累计发言 12 条」但明细里一条都查不到的幽灵成员
+      const goneMembers = s.members.purgeBefore(cutoff);
+      s.kv.set('retention_days', days);
+      s.kv.set('retention_last_run_at', Date.now());
+      return `🧹 已清理 ${days} 天前的 ${removed} 条消息明细、${goneMembers} 条成员汇总`;
     },
   });
 

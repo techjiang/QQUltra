@@ -134,8 +134,11 @@ export function createDetectEngine({ storage, logger, config: globalConfig = {} 
     },
 
     /**
-     * 判断这次违规是否应触发升级计数。
-     * 同一事件窗口内的连续命中视为同一次违规，不重复计入。
+     * 判断这次违规是否算「新事件」（同窗口内不重复计入升级）。
+     *
+     * 处置层（moderator）用的是同一份窗口配置，这个方法供外部
+     * （如巡检、回放工具）在不落库的情况下预判；引擎内部不再依赖它，
+     * 避免同一条规则在两处各判断一次而结论不一致。
      */
     isNewIncident(message, { incidentWindowMs } = {}) {
       const groupConfig = withDefaults(storage.groups.get(message.groupId)?.settings ?? {}).detect;

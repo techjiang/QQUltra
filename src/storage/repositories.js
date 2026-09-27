@@ -90,13 +90,38 @@ export function createMessageRepo(db) {
       );
     },
 
-    recentInGroup(groupId, sinceMs, limit = 500) {
+    /**
+     * 群内最近消息（默认排除指令）。
+     *
+     * 默认排除 is_command 的原因：这个接口的消费方是「给成员看的语料」
+     * ——/history 的发言回顾、/wordcloud 的词云、AI 的群上下文，
+     * 指令属于「对机器人下的操作」，混进去会让 /history 的第一行一直是
+     * 刚打完的那条 /history，词云里出现「wordcloud」「--top」这类词。
+     *
+     * 需要包含指令的场景（对账、完整回放）显式传 includeCommands。
+     */
+    recentInGroup(groupId, sinceMs, limit = 500, { includeCommands = false } = {}) {
+      const filter = includeCommands ? '' : ` AND ${ACTIVE_ONLY}`;
       return db.all(
-        `SELECT id, user_id, nickname, text, created_at FROM messages
-         WHERE group_id = ? AND created_at >= ?
+        `SELECT id, user_id, nickname, text, is_command, created_at FROM messages
+         WHERE group_id = ? AND created_at >= ?${filter}
          ORDER BY created_at DESC LIMIT ?`,
         String(groupId),
         sinceMs,
+        limit,
+      );
+    },
+
+    /** 群内最近语料，带上 until 上界过滤，供词云与 AI 上下文复用，避免各处重复拼条件。 */
+    recentWindow(groupId, since, until, limit, { includeCommands = false } = {}) {
+      const filter = includeCommands ? '' : ` AND ${ACTIVE_ONLY}`;
+      return db.all(
+        `SELECT id, user_id, nickname, text, is_command, created_at FROM messages
+         WHERE group_id = ? AND created_at >= ? AND created_at < ?${filter}
+         ORDER BY created_at DESC LIMIT ?`,
+        String(groupId),
+        since,
+        until,
         limit,
       );
     },
@@ -174,6 +199,34 @@ export function createMemberRepo(db) {
 
     remove(groupId, userId) {
       db.run('DELETE FROM group_members WHERE group_id = ? AND user_id = ?', String(groupId), String(userId));
+    },
+
+    /**
+     * 清理「明细已被删除、汇总却还在」的成员行。
+     *
+     * 汇总表是增量维护的：/purge 只删 messages 明细时，group_members 不会跟着缩，
+     * 于是 /whois、成员列表会继续展示已经没有任何明细的「幽灵成员」，
+     * 而它的累计发言数又对不上任何一条明细——对账时无从判断谁是对的。
+     *
+     * cutoff 之前的成员：把 last_seen 落在 cutoff 之前的行删掉，
+     * 因为它已经不可能再代表一个活跃成员。
+     */
+    purgeBefore(cutoff) {
+      return Number(db.run('DELETE FROM group_members WHERE last_seen < ?', cutoff).changes ?? 0);
+    },
+
+    /** 明细为空且从未入群登记的成员行（例如只发过指令的人），用于一致性修复。 */
+    removeEmpty(groupId = null) {
+      const where = groupId === null ? '' : ' AND group_id = ?';
+      const params = groupId === null ? [] : [String(groupId)];
+      return Number(
+        db
+          .run(
+            `DELETE FROM group_members WHERE message_count = 0 AND user_id NOT IN (SELECT DISTINCT user_id FROM messages WHERE 1=1${where})${where}`,
+            ...params,
+            ...params,
+          ).changes ?? 0,
+      );
     },
 
     /**

@@ -9,6 +9,11 @@
  */
 export function createModerator({ storage, adapter, logger, config = {} }) {
   const muteSeconds = config.muteSeconds ?? 600;
+  // 事件窗口优先取群配置（/config set detect.punish.incidentWindowMs），
+  // 再回落到全局默认值。之前这里只认构造参数，群配置里的值传不进来，
+  // 于是「改了配置但行为没变」且完全静默。
+  const resolveIncidentWindowMs =
+    config.resolveIncidentWindowMs ?? (() => config.incidentWindowMs ?? 60_000);
 
   const notify = async (groupId, text) => {
     try {
@@ -17,8 +22,6 @@ export function createModerator({ storage, adapter, logger, config = {} }) {
       logger?.warn(`处罚通知发送失败: ${err.message}`);
     }
   };
-
-  const incidentWindowMs = config.incidentWindowMs ?? 60_000;
 
   return {
     /**
@@ -33,6 +36,7 @@ export function createModerator({ storage, adapter, logger, config = {} }) {
       const { groupId, userId, messageId } = message;
 
       if (['mute', 'kick'].includes(decision.action)) {
+        const incidentWindowMs = Number(resolveIncidentWindowMs(groupId)) || 0;
         const sinceLast = storage.violations.msSinceLastPunish(groupId, userId);
         if (sinceLast !== null && sinceLast < incidentWindowMs) {
           logger?.debug(`同一事件窗口内已处罚过 ${userId}，跳过重复处置`);
