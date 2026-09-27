@@ -1,0 +1,37 @@
+{
+  "logLevel": "info",
+  "dataFile": "data/qqultra.db",
+
+  "onebot": {
+    "mode": "forward",
+    "wsUrl": "ws://127.0.0.1:3001",
+    "accessToken": "",
+    "listenHost": "0.0.0.0",
+    "listenPort": 8642,
+    "reconnectDelay": 3000
+  },
+
+  "ai": {
+    "enabled": false,
+    "baseUrl": "https://api.deepseek.com/v1",
+    "apiKey": "",
+    "model": "deepseek-chat",
+    "temperature": 0.7,
+    "maxTokens": 512,
+    "timeout": 60000,
+    "systemPrompt": null
+  },
+
+  "stats": {
+    "enabled": true,
+    "retentionDays": 180
+  },
+
+  "detect": {
+    "enabled": true
+  },
+
+  "permission": {
+    "whiteList": []
+  }
+}

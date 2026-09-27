@@ -1,0 +1,37 @@
+# 推送与 PR 走同一套检查，用 YAML 锚点复用：
+# 两份复制粘贴的流水线迟早会漂移，而「PR 绿了、合并到 main 却挂了」正是漂移的典型表现。
+.common_stages: &common_stages
+  - name: 安装依赖
+    script: npm ci --no-audit --no-fund
+  - name: 运行测试
+    script: npm test
+  - name: 离线链路自检
+    script: node bin/qqultra.js demo
+  - name: 面板与自检命令可用
+    script: |
+      node bin/qqultra.js panel --role=admin | grep -q "管理面板"
+      node bin/qqultra.js panel --role=member | grep -q "/stats"
+      node bin/qqultra.js version
+  - name: 运营洞察与作者信息可用
+    script: |
+      # insight 缺参数时把用法写到 stderr，因此合并流再匹配，否则这条检查会因为
+      # 「退出码非 0 且 stdout 为空」而在 CI 里红掉——检查本身写错比不检查更糟
+      node bin/qqultra.js insight 2>&1 | grep -q "用法"
+      node bin/qqultra.js about 2>&1 | grep -q "科技酱"
+      node bin/qqultra.js help 2>&1 | grep -q "insight"
+      # 群内指令出现在 /help 面板里（CLI usage 里只有 CLI 子命令，不要混淆两者）
+      node bin/qqultra.js panel --role=admin 2>&1 | grep -q "/trend"
+      node bin/qqultra.js panel --role=admin 2>&1 | grep -q "/rules audit"
+
+main:
+  push:
+    - name: test
+      docker:
+        image: node:22
+      stages: *common_stages
+
+  pull_request:
+    - name: test
+      docker:
+        image: node:22
+      stages: *common_stages

@@ -1,0 +1,56 @@
+{
+  "name": "qqultra",
+  "version": "0.3.0",
+  "description": "QQUltra：至尊QQ人工智能、群聊统计、自动化检测、群聊信息管理的高级工具（PC 端 QQ 内直接使用与管理）",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "bin": {
+    "qqultra": "./bin/qqultra.js"
+  },
+  "main": "./src/index.js",
+  "scripts": {
+    "start": "node bin/qqultra.js start",
+    "test": "node --test \"test/*.test.js\"",
+    "demo": "node bin/qqultra.js demo",
+    "banner": "node bin/qqultra.js about",
+    "panel": "node bin/qqultra.js panel --role=admin",
+    "health": "node bin/qqultra.js health",
+    "insight": "node bin/qqultra.js insight"
+  },
+  "keywords": [
+    "qq",
+    "onebot",
+    "chatbot",
+    "llm",
+    "group-stats",
+    "moderation",
+    "qq-bot",
+    "napcat",
+    "lagrange",
+    "llonebot",
+    "awesome"
+  ],
+  "author": {
+    "name": "科技酱",
+    "url": "https://docs.asoe.cn"
+  },
+  "homepage": "https://docs.asoe.cn",
+  "repository": {
+    "type": "git",
+    "url": "https://cnb.cool/asoe/TechSauce/QQUltra.git"
+  },
+  "bugs": {
+    "url": "https://cnb.cool/asoe/TechSauce/QQUltra/-/issues"
+  },
+  "files": [
+    "bin",
+    "src",
+    "docs",
+    "qqultra.config.example.json",
+    "CHANGELOG.md",
+    "README.md"
+  ]
+}
