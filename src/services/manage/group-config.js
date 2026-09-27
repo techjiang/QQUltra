@@ -63,6 +63,7 @@ export const SETTABLE_KEYS = {
   'welcome.enabled': 'boolean',
   'welcome.text': 'string',
   'antispam.enabled': 'boolean',
+  'antispam.autoApprove': 'boolean',
 };
 
 export function coerceSetting(key, rawValue) {
