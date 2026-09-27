@@ -13,6 +13,7 @@ import { loadConfig, summarizeConfig } from '../src/config.js';
 import { createLogger } from '../src/utils/logger.js';
 import { buildGroupReport, renderReportText, resolvePeriod } from '../src/services/stats/report.js';
 import { ASCII_LOGO, renderAboutText, PROJECT, AUTHOR } from '../src/assets/brand.js';
+import { DISCLAIMER_TEXT, DISCLAIMER_SHORT } from '../src/assets/disclaimer.js';
 import { VERSION } from '../src/version.js';
 import { renderPanel } from '../src/services/manage/panel.js';
 import { inspectGroupHealth, renderHealthText, buildDailyDigest } from '../src/services/manage/digest.js';
@@ -47,7 +48,7 @@ ${PROJECT.name} v${VERSION} — ${PROJECT.slogan}
   qqultra insight <群号>    群运营洞察（活跃总览/沉默成员/话题趋势/新成员/规则效果）
   qqultra inspect          查看当前配置（脱敏）
   qqultra purge [天数]      清理过期消息明细
-  qqultra about            作者与项目信息
+  qqultra about            作者与项目信息（含完整免责声明）
   qqultra help             显示本帮助
 
 环境变量：
@@ -59,6 +60,8 @@ ${PROJECT.name} v${VERSION} — ${PROJECT.slogan}
   QQU_AI__MODEL            模型名
   QQU_DATAFILE             数据文件路径
   QQU_LOGLEVEL             debug|info|warn|error
+
+${DISCLAIMER_SHORT}
 `;
 
 const [command = 'help', ...rest] = process.argv.slice(2);
@@ -92,6 +95,7 @@ try {
     case 'about':
       console.log(renderAboutText({ version: VERSION }));
       console.log('\n' + ASCII_LOGO);
+      console.log('\n' + DISCLAIMER_TEXT);
       break;
     case 'inspect':
       cmdInspect();

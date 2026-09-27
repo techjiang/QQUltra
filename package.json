@@ -49,8 +49,11 @@
     "bin",
     "src",
     "docs",
+    "DISCLAIMER.md",
+    "LICENSE",
     "qqultra.config.example.json",
     "CHANGELOG.md",
     "README.md"
-  ]
+  ],
+  "disclaimer": "非官方第三方工具，与腾讯无关；使用风险与全部后果由使用者自行承担，作者不承担任何责任。完整条款见 DISCLAIMER.md"
 }

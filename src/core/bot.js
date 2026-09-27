@@ -26,6 +26,7 @@ import {
   renderActivityText,
 } from '../services/stats/insight.js';
 import { renderAboutText, PROJECT } from '../assets/brand.js';
+import { DISCLAIMER_TEXT, DISCLAIMER_SHORT } from '../assets/disclaimer.js';
 import { VERSION } from '../version.js';
 import { renderWordCloudSvg, renderPanelSvg } from '../services/stats/wordcloud-svg.js';
 import { writeTempFile, sweepStale } from '../utils/tempfile.js';
@@ -108,7 +109,7 @@ const HELP = [
   '/panel — 打开管理面板（PC 端 QQ 内直接操作）',
   '/panel --img — 面板以图卡形式发送',
   '/status — 运行状态与自检',
-  '/about — 作者与项目信息',
+  '/about — 作者与项目信息（含免责声明）',
   '/ping — 存活检查',
   '',
   '📊 洞察',
@@ -141,6 +142,8 @@ const HELP = [
   '/ai <问题> — 提问（群里需 @ 机器人，私聊直接发）',
   '/ai-stats [周期] — 让 AI 解读数据',
   '/ai-reset — 清空会话记忆',
+  '',
+  DISCLAIMER_SHORT,
 ].join('\n');
 
 /**
@@ -547,8 +550,11 @@ function registerCommands(commands, { storage, config, sessions, aiProvider, log
   });
 
   commands.register('about', {
-    description: '作者与项目信息',
-    run: () => `${renderAboutText({ version: VERSION })}\n\n数据只落本地 SQLite，不外传。`,
+    description: '作者与项目信息（含免责声明）',
+    // 免责声明跟着 /about 一起发，而不是另设指令：会用这个工具的人一定会看 /about，
+    // 但不会主动去打一条 /disclaimer。声明必须出现在用户本来就会经过的地方。
+    run: () =>
+      `${renderAboutText({ version: VERSION })}\n\n数据只落本地 SQLite，不外传。\n\n${DISCLAIMER_TEXT}`,
   });
 
   commands.register('panel', {

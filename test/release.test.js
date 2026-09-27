@@ -899,3 +899,133 @@ describe('回归：文档里给出的配置示例必须真的能执行', () => {
     storage.close();
   });
 });
+
+describe('免责声明：必须出现在用户本来就会经过的地方', () => {
+  /**
+   * 这一组的动机来自 Issue #1：「请完全添加声明所有责任等作者不承担责任」。
+   *
+   * 免责声明这类文本的特点是——写得再完整，只要用户没看到就等于没写。
+   * 而「用户会看的地方」是有限的几个：群内 /about、面板、CLI about/help、README 第一屏。
+   * 所以这里不测「文件里有没有这段话」（那只能证明文件存在），而是测
+   * **每个真实入口的输出里都带着声明**。
+   */
+
+  test('群内 /about 同时给出作者信息与完整免责声明', async () => {
+    const { bot, adapter, storage } = await makeBot();
+    await bot.inject({ groupId: '9527', userId: '20001', text: '/about' });
+    const text = adapter.lastReply();
+    assert.match(text, /科技酱/);
+    assert.match(text, /免责声明/, '/about 必须带免责声明，否则没人会主动去翻 DISCLAIMER.md');
+    // 四条「不可省略」的核心条款
+    assert.match(text, /与腾讯/, '必须点明与腾讯无关联');
+    assert.match(text, /现状/, '必须点明按现状提供、不做担保');
+    assert.match(text, /封禁|限制/, '必须点明账号风险');
+    assert.match(text, /不承担任何责任/, '必须点明作者不承担责任');
+    storage.close();
+  });
+
+  test('面板页脚带一句话免责声明（每次打开面板都会看到）', async () => {
+    const { bot, adapter, storage } = await makeBot();
+    for (const role of ['owner', 'member']) {
+      adapter.clearOutbox();
+      await bot.inject({ groupId: '9527', userId: `2999${role.length}`, role, text: '/panel' });
+      const text = adapter.lastReply();
+      assert.match(text, /不承担任何责任/, `${role} 看到的面板也要带声明`);
+      assert.match(text, /非官方/, `${role} 看到的面板也要点明非官方`);
+    }
+    storage.close();
+  });
+
+  test('/help 面板末行带免责声明（不塞进指令列表里干扰阅读）', async () => {
+    const { bot, adapter, storage } = await makeBot();
+    await bot.inject({ groupId: '9527', userId: '20001', text: '/help' });
+    const text = adapter.lastReply();
+    assert.match(text, /\/about — 作者与项目信息（含免责声明）/, '/about 的帮助文案要说明含声明');
+    assert.match(text, /不承担任何责任/, '/help 末尾要带声明');
+    // 声明必须在最后：夹在指令中间会被当成又一条指令忽略掉
+    assert.equal(text.trim().split('\n').at(-1).includes('不承担任何责任'), true);
+    storage.close();
+  });
+
+  test('CLI about 与 help 都输出免责声明', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const about = execFileSync(process.execPath, ['bin/qqultra.js', 'about'], { encoding: 'utf8' });
+    assert.match(about, /📜 免责声明/);
+    assert.match(about, /不承担任何责任/);
+    assert.match(about, /DISCLAIMER\.md/, '要指向完整条款');
+
+    const help = execFileSync(process.execPath, ['bin/qqultra.js', 'help'], { encoding: 'utf8' });
+    assert.match(help, /不承担任何责任/, 'help 是第一屏，最该出现声明的地方之一');
+    storage_noop();
+  });
+
+  test('DISCLAIMER.md / LICENSE / README 三者都在，且互相指向', async () => {
+    const { readFileSync, existsSync } = await import('node:fs');
+    for (const f of ['DISCLAIMER.md', 'LICENSE', 'README.md']) {
+      assert.ok(existsSync(f), `${f} 必须存在`);
+    }
+    const disclaimer = readFileSync('DISCLAIMER.md', 'utf8');
+    const license = readFileSync('LICENSE', 'utf8');
+    const readme = readFileSync('README.md', 'utf8');
+
+    // 完整条款必须覆盖这些情形，缺任何一条都会留下可被追问的口子
+    for (const clause of [
+      '与腾讯无关联',
+      '不实现 QQ 私有协议',
+      '账号风险',
+      '不提供任何担保',
+      '数据',
+      '自动化处置',
+      '使用者义务',
+      '责任限制',
+      '条款可分性',
+      '接受与变更',
+    ]) {
+      assert.ok(disclaimer.includes(clause), `DISCLAIMER.md 缺少「${clause}」条款`);
+    }
+
+    // MIT 只覆盖软件本身，平台条款与账号风险要由附加声明补齐
+    assert.match(license, /MIT License/);
+    assert.match(license, /Additional Disclaimer/);
+    assert.match(license, /DISCLAIMER\.md/, 'LICENSE 要指向完整条款');
+    assert.match(license, /affiliated/, 'LICENSE 附加段要含英文「无关联」表述（便于对外分发）');
+
+    // README 第一屏就要能看到，而不是只在文末
+    const firstScreen = readme.slice(0, readme.indexOf('## 目录'));
+    assert.match(firstScreen, /免责声明/, 'README 目录之前必须有警示块');
+    assert.match(firstScreen, /DISCLAIMER\.md/);
+    assert.match(readme, /## 免责声明/, 'README 要有独立章节');
+  });
+
+  test('package.json 打包包含声明文件，且带风险提示字段', async () => {
+    const { readFileSync } = await import('node:fs');
+    const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+    for (const f of ['DISCLAIMER.md', 'LICENSE']) {
+      assert.ok(pkg.files.includes(f), `package.json files 要包含 ${f}，否则发布出去声明会丢`);
+    }
+    assert.equal(pkg.license, 'MIT');
+    assert.match(pkg.disclaimer ?? '', /不承担任何责任/);
+  });
+
+  test('文档导航能到达免责声明（docs 与 README 都不漏）', async () => {
+    const { readFileSync } = await import('node:fs');
+    assert.match(readFileSync('docs/README.md', 'utf8'), /DISCLAIMER\.md/);
+    assert.match(readFileSync('docs/FAQ.md', 'utf8'), /## 免责与风险/);
+    assert.match(readFileSync('docs/DEPLOY.md', 'utf8'), /DISCLAIMER\.md/);
+    assert.match(readFileSync('docs/DEVELOPMENT.md', 'utf8'), /DISCLAIMER\.md/);
+    assert.match(readFileSync('docs/USAGE.md', 'utf8'), /DISCLAIMER\.md/);
+    assert.match(readFileSync('docs/USAGE.md', 'utf8'), /作者不承担任何责任/);
+  });
+
+  test('声明有版本号与生效日期（争议时要能定位当时生效的版本）', async () => {
+    const { DISCLAIMER_VERSION, DISCLAIMER_DATE, DISCLAIMER_TEXT, DISCLAIMER_SHORT } =
+      await import('../src/assets/disclaimer.js');
+    assert.match(DISCLAIMER_VERSION, /^\d+\.\d+\.\d+$/);
+    assert.match(DISCLAIMER_DATE, /^\d{4}-\d{2}-\d{2}$/);
+    assert.ok(DISCLAIMER_TEXT.includes(DISCLAIMER_VERSION), '群内文本要带上版本号');
+    assert.ok(DISCLAIMER_SHORT.length < 160, '一句话版要足够短，否则会被当成刷屏');
+  });
+});
+
+/** CLI 用例里用不到 bot，但 import 已存在，保留一个空函数避免误用。 */
+function storage_noop() {}

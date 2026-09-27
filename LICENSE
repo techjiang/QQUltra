@@ -1,0 +1,40 @@
+MIT License
+
+Copyright (c) 2026 科技酱 (https://docs.asoe.cn)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+Additional Disclaimer / 附加免责声明
+
+This project is an unofficial third-party tool and is NOT affiliated with,
+authorized, endorsed or sponsored by Tencent Holdings Limited or any of its
+affiliates. It does not implement any proprietary QQ protocol; it is only an
+OneBot 11 client that requires a third-party protocol implementation to run.
+
+Using this Software may violate Tencent's Terms of Service and may result in
+account restriction, suspension or permanent ban, data loss, or other
+consequences. You deploy and operate this Software entirely on your own;
+all such risks and consequences are borne solely by you, and the author
+accepts no liability whatsoever. See DISCLAIMER.md for the full terms.
+
+本项目为非官方第三方工具，与腾讯公司无关，未获其授权或认可。使用本软件可能违反
+腾讯服务条款，存在账号被限制、封禁、数据丢失等风险；本软件由使用者自行部署与使用，
+全部后果由使用者自行承担，作者不承担任何责任。完整条款见 DISCLAIMER.md。

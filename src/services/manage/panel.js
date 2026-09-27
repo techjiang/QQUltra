@@ -10,6 +10,8 @@
  * 不存在「面板和实际能力对不上」的问题。
  */
 
+import { DISCLAIMER_SHORT } from '../../assets/disclaimer.js';
+
 export const PANEL_SECTIONS = [
   {
     key: 'insight',
@@ -74,6 +76,13 @@ export const PANEL_SECTIONS = [
 export const PANEL_FOOTER = '直接回复上面任意指令即可执行 · 管理员项需群主/管理员或白名单身份';
 
 /**
+ * 面板页脚的第二行：免责声明的一句话版。
+ * 放在用户每次打开面板都会看到的位置——声明如果只存在于 README 里，
+ * 出事时没人能说自己「看到过」。
+ */
+export const PANEL_DISCLAIMER = DISCLAIMER_SHORT;
+
+/**
  * 渲染面板。按权限过滤：普通成员看不到管理项，
  * 否则面板会变成「教普通成员怎么找管理员权限漏洞」的说明书。
  */
@@ -94,6 +103,7 @@ export function renderPanel({ role = 'member', whiteListed = false, groupName = 
   }
   lines.push('');
   lines.push(PANEL_FOOTER);
+  lines.push(PANEL_DISCLAIMER);
   return lines.join('\n');
 }
 
