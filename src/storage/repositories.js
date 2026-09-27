@@ -267,20 +267,38 @@ export function createGroupRepo(db) {
     };
 
   return {
+    /**
+     * 确保群记录存在，并可选补充群名。
+     *
+     * 关键约束：没有实际变更时**不写库**。
+     * 旧实现用 `ON CONFLICT DO UPDATE SET updated_at = excluded.updated_at`，
+     * 于是每条群消息（handleMessage 与 collector 各调一次）都会产生一次 UPDATE——
+     * 既是纯写放大（WAL 下每次提交都要落日志页），
+     * 也让 updated_at 失去意义：它本该表示「配置何时改过」，
+     * 被消息刷成每秒都在变，运维再也无法判断配置是什么时候动的。
+     */
     ensure(groupId, name = null) {
+      const id = String(groupId);
+      const existing = this.get(id);
+      if (existing) {
+        // 只在需要补名且确有变化时写一次
+        if (name && existing.name !== name) {
+          db.run('UPDATE groups SET name = ?, updated_at = ? WHERE group_id = ?', name, Date.now(), id);
+          return this.get(id);
+        }
+        return existing;
+      }
       const now = Date.now();
       db.run(
         `INSERT INTO groups (group_id, name, enabled, settings, created_at, updated_at)
          VALUES (?, ?, 1, '{}', ?, ?)
-         ON CONFLICT (group_id) DO UPDATE SET
-           name = COALESCE(excluded.name, groups.name),
-           updated_at = excluded.updated_at`,
-        String(groupId),
+         ON CONFLICT (group_id) DO NOTHING`,
+        id,
         name,
         now,
         now,
       );
-      return this.get(groupId);
+      return this.get(id);
     },
 
     get(groupId) {
@@ -376,18 +394,60 @@ export function createRuleRepo(db) {
 
 export function createViolationRepo(db) {
   return {
-    add({ groupId, userId, ruleId = null, kind, detail = null, action = null }) {
+    /**
+     * 写入一条命中记录。
+     *
+     * @param {number} [createdAt] 显式时间戳，默认 now()。检测链路里传入
+     *   message.timestamp，让「事件窗口」按消息发生时间而不是落库时间判断——
+     *   补发/延迟到达的消息否则会被算成「刚刚发生」，把升级阶梯顶满。
+     * @param {boolean} [exempt] 是否属于「豁免命中」（白名单角色 / 仅记录不处置）。
+     *   豁免命中仍要留痕供审计，但不该被计入预警与简报的「风控命中」，
+     *   否则管理员自己说一句广告口径的话就会把群预警打到触发。
+     */
+    add({ groupId, userId, ruleId = null, kind, detail = null, action = null, createdAt = Date.now(), exempt = false }) {
       const res = db.run(
-        'INSERT INTO violations (group_id, user_id, rule_id, kind, detail, action, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO violations (group_id, user_id, rule_id, kind, detail, action, exempt, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
         String(groupId),
         String(userId),
         ruleId,
         kind,
         detail,
-        action,
-        Date.now(),
+        exempt ? 'exempt' : action,
+        exempt ? 1 : 0,
+        createdAt,
       );
       return Number(res.lastInsertRowid);
+    },
+
+    /**
+     * 指定时间窗内的「有效命中」数（排除豁免命中与 punish 摘要）。
+     * 供异常预警与每日简报使用：这两个功能的作用是「提醒有人正在捣乱」，
+     * 把豁免命中算进去会让它们变成噪音源，最终被管理员整体关掉。
+     */
+    countHitsInWindow(groupId, since, until = Number.MAX_SAFE_INTEGER) {
+      const row = db.get(
+        `SELECT COUNT(*) AS c FROM violations
+         WHERE group_id = ? AND created_at >= ? AND created_at < ?
+           AND kind != 'punish' AND exempt = 0`,
+        String(groupId),
+        since,
+        until,
+      );
+      return row?.c ?? 0;
+    },
+
+    /** 时间窗内的有效命中明细（排除豁免与 punish 摘要），上限由 SQL 保证而不是先取最近 N 条再过滤。 */
+    hitsInWindow(groupId, since, until = Number.MAX_SAFE_INTEGER, limit = 500) {
+      return db.all(
+        `SELECT * FROM violations
+         WHERE group_id = ? AND created_at >= ? AND created_at < ?
+           AND kind != 'punish' AND exempt = 0
+         ORDER BY created_at DESC LIMIT ?`,
+        String(groupId),
+        since,
+        until,
+        limit,
+      );
     },
 
     /** 全部命中记录数（含同一违规的重复命中），用于审计展示。 */
@@ -484,7 +544,9 @@ export function createViolationRepo(db) {
           userId: anchor.user_id,
           createdAt: anchor.created_at,
           kinds: sameEvent.map((r) => r.kind),
+          // 处置摘要里 action 就是实际执行的动作；punish 行永不豁免
           action: anchor.action ?? 'none',
+          exempt: false,
           detail: anchor.detail ?? '',
         });
         if (incidents.length >= limit) break;
@@ -500,11 +562,20 @@ export function createViolationRepo(db) {
           if (existing) {
             if (!existing.kinds.includes(r.kind)) existing.kinds.push(r.kind);
             existing.detail ||= r.detail ?? '';
+            // 同一事件里只要有一条是真实命中，就不算「纯豁免」
+            existing.exempt = existing.exempt && r.exempt === 1;
             used.add(r.id);
             continue;
           }
           used.add(r.id);
-          incidents.push({ userId: r.user_id, createdAt: r.created_at, kinds: [r.kind], action: r.action ?? 'none', detail: r.detail ?? '' });
+          incidents.push({
+            userId: r.user_id,
+            createdAt: r.created_at,
+            kinds: [r.kind],
+            action: r.action ?? 'none',
+            exempt: r.exempt === 1,
+            detail: r.detail ?? '',
+          });
           if (incidents.length >= limit) break;
         }
       }

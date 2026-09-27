@@ -104,7 +104,10 @@ export function buildDailyDigest(storage, groupId, { now = Date.now() } = {}) {
   const dayBefore = storage.messages.countSince(groupId, yesterdayStart - DAY, yesterdayStart);
   const users = storage.messages.distinctActiveUsers(groupId, yesterdayStart, todayStart);
   const top = storage.messages.countByUser(groupId, yesterdayStart, todayStart).slice(0, 3);
-  const violations = storage.violations.recent(groupId, 200).filter((v) => v.created_at >= yesterdayStart && v.created_at < todayStart);
+  // 用窗口查询而不是「取最近 200 条再过滤」：
+  // 后者的上限是行数而不是时间，违规多的群会把昨天的记录挤出去，简报少报。
+  // 同时排除豁免命中（白名单角色），风控命中数才是真实需要人关注的量。
+  const violations = storage.violations.hitsInWindow(groupId, yesterdayStart, todayStart, 500);
 
   const delta = dayBefore === 0 ? null : Math.round(((yesterday - dayBefore) / dayBefore) * 100);
 
@@ -123,7 +126,10 @@ export function buildDailyDigest(storage, groupId, { now = Date.now() } = {}) {
  */
 export function evaluateAlert({ storage, groupId, now = Date.now(), windowMs = 10 * 60_000, threshold = 5 }) {
   const since = now - windowMs;
-  const hits = storage.violations.recent(groupId, 500).filter((v) => v.created_at >= since && v.kind !== 'punish');
+  // 排除豁免命中与 punish 摘要，且窗口过滤交给 SQL：
+  // 先取最近 500 条再过滤，等于让「最近 500 条里有多少落在窗口内」决定结果，
+  // 群里有历史违规时窗口内的新违规会被挤掉，预警该响的时候不响。
+  const hits = storage.violations.hitsInWindow(groupId, since, now + 1, 500);
   if (hits.length < threshold) return { triggered: false, reason: '', count: hits.length };
 
   const byKind = {};

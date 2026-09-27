@@ -16,9 +16,7 @@ import { inspectGroupHealth, renderHealthText, evaluateAlert, buildDailyDigest }
 import { renderAboutText, PROJECT } from '../assets/brand.js';
 import { VERSION } from '../version.js';
 import { renderWordCloudSvg, renderPanelSvg } from '../services/stats/wordcloud-svg.js';
-import { writeFileSync, mkdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { writeTempFile, sweepStale } from '../utils/tempfile.js';
 import { formatDuration } from '../utils/time.js';
 
 /**
@@ -140,6 +138,9 @@ export function createBot({
   // 允许注入 AI provider：测试可直接替换，避免真实网络调用与密钥依赖
   aiProvider: injectedAiProvider,
 }) {
+  // 启动时回收上次进程遗留的出图临时文件（定时器不跨进程）。
+  sweepStale({ logger });
+
   const bus = createEventBus({ logger });
   const collector = createCollector({ storage, logger });
   const detectEngine = createDetectEngine({ storage, logger, config: config.detect });
@@ -522,9 +523,14 @@ function registerCommands(commands, { storage, config, sessions, aiProvider, log
       // 图卡能一屏看完，更适合当「操作台」用。
       if (args?.flags?.img === undefined) return text;
       try {
-        const file = join(tmpdir(), `qqu-panel-${message.userId}-${Date.now()}.svg`);
-        mkdirSync(tmpdir(), { recursive: true });
-        writeFileSync(file, renderPanelSvg(text, { title: 'QQUltra 管理面板' }), 'utf8');
+        // 临时文件登记 TTL 后再交给适配器：协议端是异步读文件的，
+        // 所以不能发完就删（会变破图），但也不能永不删除（旧实现会在
+        // tmpdir 里无限堆积 SVG）。生命周期统一交给 tempfile 模块。
+        const file = writeTempFile({
+          name: `panel-${message.isGroup ? `g${message.groupId}` : `u${message.userId}`}-${Date.now()}.svg`,
+          content: renderPanelSvg(text, { title: 'QQUltra 管理面板' }),
+          logger,
+        });
         await (message.isGroup ? adapter.sendGroupImage(message.groupId, file) : adapter.sendPrivateImage(message.userId, file));
         return null;
       } catch (err) {
@@ -567,11 +573,14 @@ function registerCommands(commands, { storage, config, sessions, aiProvider, log
 
       const header = `☁️ ${label}词云（${rows.length} 条消息 / ${words.length} 个高频词）`;
       // 先尝试渲染成图片发出去，失败就退回纯文本——不退化的炫技等于故障
+      if (args?.flags?.img === false) return `${header}\n${renderWordCloudText(words)}`;
       try {
         const svg = renderWordCloudSvg(words, { title: `${label}群聊词云` });
-        const file = join(tmpdir(), `qqu-wordcloud-${message.groupId}-${Date.now()}.svg`);
-        mkdirSync(tmpdir(), { recursive: true });
-        writeFileSync(file, svg, 'utf8');
+        const file = writeTempFile({
+          name: `wordcloud-${message.isGroup ? `g${message.groupId}` : `u${message.userId}`}-${Date.now()}.svg`,
+          content: svg,
+          logger,
+        });
         await (message.isGroup ? ad.sendGroupImage(message.groupId, file) : ad.sendPrivateImage(message.userId, file));
         return null;
       } catch (err) {
@@ -607,12 +616,22 @@ function registerCommands(commands, { storage, config, sessions, aiProvider, log
       // 按行展示会让 --n 10 只装得下 3 次真实违规，且同一事件重复出现三遍。
       const rows = s.violations.incidents(message.groupId, want);
       if (rows.length === 0) return '✅ 最近没有任何违规记录';
+      const exemptCount = rows.filter((v) => v.exempt).length;
+      const title =
+        exemptCount === 0
+          ? `🚨 最近 ${rows.length} 次违规`
+          : exemptCount === rows.length
+            ? `ℹ️ 最近 ${rows.length} 次命中均由白名单/仅记录策略放行，未产生处置`
+            : `🚨 最近 ${rows.length} 次触发（其中 ${exemptCount} 次豁免）`;
       return [
-        `🚨 最近 ${rows.length} 次违规`,
+        title,
         ...rows.map((v) => {
           const at = new Date(v.createdAt).toLocaleString('zh-CN', { hour12: false });
           const kinds = v.kinds.length ? v.kinds.join('+') : '记录';
-          return `· ${at} ${v.userId} [${kinds}] →${v.action} ${truncate(v.detail, 40)}`;
+          // 豁免命中（白名单角色 / 仅记录）要显式标出来。
+          // 否则管理员看到自己说的话被列成「违规」，第一反应是关掉整个检测。
+          const mark = v.action === 'none' || v.exempt ? '（仅记录，未处置）' : `→${v.action}`;
+          return `· ${at} ${v.userId} [${kinds}] ${mark} ${truncate(v.detail, 40)}`;
         }),
       ].join('\n');
     },

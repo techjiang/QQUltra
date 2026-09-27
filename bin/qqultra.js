@@ -17,6 +17,7 @@ import { VERSION } from '../src/version.js';
 import { renderPanel } from '../src/services/manage/panel.js';
 import { inspectGroupHealth, renderHealthText, buildDailyDigest } from '../src/services/manage/digest.js';
 import { countWords, renderWordCloudText } from '../src/services/stats/wordcloud.js';
+import { disposeTempFiles } from '../src/utils/tempfile.js';
 
 const USAGE = `${ASCII_LOGO}
 
@@ -201,6 +202,9 @@ async function cmdStart() {
     app.logger.info(`收到 ${signal}，正在退出…`);
     clearInterval(timer);
     await app.shutdown();
+    // 退出时清掉本次进程写出的图卡临时文件；上次遗留的那些已在 createBot 启动时回收
+    const removed = disposeTempFiles();
+    if (removed > 0) app.logger.debug(`已清理 ${removed} 个临时出图文件`);
     process.exit(0);
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
@@ -280,6 +284,7 @@ async function cmdDemo(args) {
   if (args.includes('--json')) console.log('\n' + JSON.stringify(report, null, 2));
 
   await bot.stop();
+  disposeTempFiles();
   storage.close();
 }
 
@@ -318,8 +323,8 @@ function cmdPurge(args) {
   const { storage, config } = openLocalStorage();
   try {
     const days = Number(args[0] ?? config.stats.retentionDays);
-    const { messages, violations } = runRetention(storage, { retentionDays: days });
-    console.log(`已清理 ${messages} 条消息、${violations} 条违规记录（保留最近 ${days} 天）`);
+    const { messages, violations, members } = runRetention(storage, { retentionDays: days });
+    console.log(`已清理 ${messages} 条消息、${violations} 条违规记录、${members} 条空成员汇总（保留最近 ${days} 天）`);
   } finally {
     storage.close();
   }

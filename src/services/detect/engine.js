@@ -105,6 +105,14 @@ export function createDetectEngine({ storage, logger, config: globalConfig = {} 
      */
     commit(message, findings, decision, { executed } = {}) {
       if (findings.length === 0) return;
+      // 豁免 = 这次命中不会导致任何处置（白名单角色 / 处罚关闭 / 只记录）。
+      // 这类命中必须单独标记：它们要留痕（审计、申诉时能查到「机器人看到过」），
+      // 但绝不能计入「风控命中」——否则管理员自己说一句广告口径的话，
+      // 预警和每日简报就会把它报成攻击，最终功能被整体关掉。
+      const exempt = decision.action === 'none';
+      // 时间戳取消息发生时间而不是落库时间：补发/延迟到达的消息
+      // 若按 now 记录，会被后续的事件窗口判定当成「刚刚发生」。
+      const createdAt = Number.isFinite(Number(message.timestamp)) ? Number(message.timestamp) : Date.now();
       storage.db.transaction(() => {
         for (const f of findings) {
           storage.violations.add({
@@ -114,6 +122,8 @@ export function createDetectEngine({ storage, logger, config: globalConfig = {} 
             kind: f.kind,
             detail: f.detail,
             action: decision.action,
+            createdAt,
+            exempt,
           });
           if (f.ruleId) storage.rules.bumpHit(f.ruleId);
         }
@@ -127,6 +137,7 @@ export function createDetectEngine({ storage, logger, config: globalConfig = {} 
             kind: 'punish',
             detail: decision.reason,
             action: executed,
+            createdAt,
           });
         }
       });

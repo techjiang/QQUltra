@@ -88,9 +88,39 @@ export const MIGRATIONS = [
       CREATE INDEX IF NOT EXISTS idx_ai_conv_scope ON ai_conversations (scope_key, id);
     `,
   },
+  {
+    version: 3,
+    name: 'violation-exempt',
+    // 新建库直接带上 exempt 列；老库由 resolve 动态 ALTER 补齐（列检查用 PRAGMA）。
+    sql: `
+      CREATE TABLE IF NOT EXISTS violations (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id    TEXT NOT NULL,
+        user_id     TEXT NOT NULL,
+        rule_id     INTEGER,
+        kind        TEXT NOT NULL,
+        detail      TEXT,
+        action      TEXT,
+        exempt      INTEGER NOT NULL DEFAULT 0,
+        created_at  INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_violations_group_time ON violations (group_id, created_at);
+    `,
+    resolve: null,
+  },
 ];
 
 export function migrate(db, { logger } = {}) {
+  // 迁移是「可重复执行」的：新增列用 IF NOT EXISTS 包一层，
+  // 让老库升级和全新初始化走同一段代码。
+  // 列存在性检查必须用 PRAGMA，SQLite 不支持 ADD COLUMN IF NOT EXISTS。
+  const hasColumn = (table, column) =>
+    db.all(`PRAGMA table_info(${table})`).some((c) => c.name === column);
+  MIGRATIONS.find((m) => m.version === 3).resolve = (database) => {
+    if (!hasColumn('violations', 'exempt')) {
+      database.exec('ALTER TABLE violations ADD COLUMN exempt INTEGER NOT NULL DEFAULT 0');
+    }
+  };
   db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -103,6 +133,8 @@ export function migrate(db, { logger } = {}) {
   for (const migration of pending) {
     db.transaction(() => {
       db.exec(migration.sql);
+      // resolve 处理「老库缺列」这类 DDL 差异，sqlite 没有 ADD COLUMN IF NOT EXISTS
+      migration.resolve?.(db);
       db.run('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)', migration.version, migration.name, Date.now());
     });
     logger?.info(`已应用迁移 v${migration.version} (${migration.name})`);
