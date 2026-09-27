@@ -494,13 +494,39 @@ export function createViolationRepo(db) {
      * 距上次实际处罚过去了多久（毫秒）；从未被处罚过返回 null。
      * 用于把「一次刷屏」折叠成一次违规，而不是按消息条数计数。
      */
-    msSinceLastPunish(groupId, userId) {
+    /**
+     * 距上次实际处罚过去了多久（毫秒）；从未被处罚过返回 null。
+     * 用于把「一次刷屏」折叠成一次违规，而不是按消息条数计数。
+     *
+     * `now` 必须由调用方传入**消息自身的时间**，不能用 Date.now()：
+     * violations.created_at 现在存的是 message.timestamp（消息发生时刻），
+     * 而协议端补发历史消息、或时间戳偏移时，消息时间与墙上时间能差出几小时。
+     * 混用两种时钟会让「同一个事件窗口」的判定随墙上时间漂移，
+     * 表现为补发的消息时而合并、时而拆成两条。
+     *
+     * @param {number} [now] 参照时刻，默认取墙上时间（仅供离线工具使用）
+     */
+    msSinceLastPunish(groupId, userId, now = Date.now()) {
       const row = db.get(
         "SELECT created_at FROM violations WHERE group_id = ? AND user_id = ? AND kind = 'punish' ORDER BY created_at DESC LIMIT 1",
         String(groupId),
         String(userId),
       );
-      return row ? Date.now() - row.created_at : null;
+      if (!row) return null;
+      // 上次处罚晚于当前消息时间（乱序到达的历史消息）时视为「不在窗口内」，
+      // 返回 null 让调用方按新事件处理，而不是得到一个负数
+      const delta = now - row.created_at;
+      return delta < 0 ? null : delta;
+    },
+
+    /** 上次实际处罚的时刻（毫秒）；从未处罚过返回 null。 */
+    getLastPunishAt(groupId, userId) {
+      const row = db.get(
+        "SELECT created_at FROM violations WHERE group_id = ? AND user_id = ? AND kind = 'punish' ORDER BY created_at DESC LIMIT 1",
+        String(groupId),
+        String(userId),
+      );
+      return row ? row.created_at : null;
     },
 
     recent(groupId, limit = 20) {

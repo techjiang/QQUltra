@@ -37,7 +37,11 @@ export function createModerator({ storage, adapter, logger, config = {} }) {
 
       if (['mute', 'kick'].includes(decision.action)) {
         const incidentWindowMs = Number(resolveIncidentWindowMs(groupId)) || 0;
-        const sinceLast = storage.violations.msSinceLastPunish(groupId, userId);
+        // 用「消息发生时间」而不是墙上时间做窗口判定：
+        // violations.created_at 存的是 message.timestamp，混用两种时钟会让
+        // 补发/延迟到达的消息在窗口判定上随机漂移
+        const now = Number.isFinite(Number(message.timestamp)) ? Number(message.timestamp) : Date.now();
+        const sinceLast = storage.violations.msSinceLastPunish(groupId, userId, now);
         if (sinceLast !== null && sinceLast < incidentWindowMs) {
           logger?.debug(`同一事件窗口内已处罚过 ${userId}，跳过重复处置`);
           return 'skipped';
