@@ -841,3 +841,61 @@ describe('回归：撤回通知必须留痕', () => {
     assert.equal(notice.operatorId, '20002');
   });
 });
+
+describe('回归：文档里给出的配置示例必须真的能执行', () => {
+  /**
+   * 这一组不是测业务，而是测「文档与代码没有漂移」。
+   * 起因：文档（USAGE/CONFIG）里写了 `/config set antispam.autoApprove true`，
+   * 但 SETTABLE_KEYS 里没有这一项——照着文档操作的人只会拿到
+   * 「指令执行失败：不支持的配置项」，而这恰恰是入群审核从人工切自动的唯一入口。
+   * 文档写错命令比不写更糟：它把「功能不可用」伪装成「用户没看懂」。
+   */
+  test('/config set antispam.autoApprove 可用（入群审核切自动）', async () => {
+    const { bot, adapter, storage } = await makeBot();
+    await bot.inject({ groupId: '9527', userId: '29999', role: 'owner', text: '/config set antispam.autoApprove true' });
+    assert.match(adapter.lastReply(), /已设置/);
+    assert.equal(storage.groups.get('9527').settings.antispam.autoApprove, true);
+
+    // 生效验证：申请应被自动通过，而不是留在「待审核」
+    adapter.emitRequest({ subType: 'add', flag: 'auto-1', groupId: '9527', userId: '20012' });
+    await new Promise((r) => setTimeout(r, 30));
+    const call = adapter.actions.find((a) => a.action === 'set_group_add_request');
+    assert.ok(call, '开启 autoApprove 后应自动通过申请');
+    assert.equal(call.params.approve, true);
+    storage.close();
+  });
+
+  test('/config keys 列出的每一项都能被 /config set 接受', async () => {
+    // 防止「keys 里列了但 set 不认」这种自相矛盾：用户看到列表里有，
+    // 照着敲却报「不支持的配置项」，第一反应会怀疑是权限或写法问题，而不是代码。
+    const { SETTABLE_KEYS } = await import('../src/services/manage/group-config.js');
+    const sampleFor = (spec) => {
+      if (spec === 'boolean') return 'true';
+      if (spec === 'number') return '1';
+      if (spec.startsWith('enum:')) return spec.slice(5).split(',')[0];
+      return 'x';
+    };
+    const { bot, adapter, storage } = await makeBot();
+    for (const [key, spec] of Object.entries(SETTABLE_KEYS)) {
+      adapter.clearOutbox();
+      await bot.inject({ groupId: '9527', userId: '29999', role: 'owner', text: `/config set ${key} ${sampleFor(spec)}` });
+      const reply = adapter.lastReply();
+      assert.ok(reply, `${key} 必须有回复`);
+      assert.ok(!/执行失败|不支持的配置项/.test(reply), `${key} 应被接受，实际：${reply}`);
+    }
+    storage.close();
+  });
+
+  test('/config set 深合并同段配置，不会抹掉同段其它键', async () => {
+    // 回归：setSetting 整段替换，setSetting('welcome', {enabled:true})
+    // 会把 welcome.text 抹掉；而调用方从返回值里看不出任何异常
+    const { storage } = await makeBot();
+    storage.groups.ensure('9527');
+    storage.groups.setSetting('9527', 'welcome', { text: '自定义欢迎语' });
+    storage.groups.setSetting('9527', 'welcome', { enabled: true });
+    const welcome = storage.groups.get('9527').settings.welcome;
+    assert.equal(welcome.enabled, true);
+    assert.equal(welcome.text, '自定义欢迎语', '同段的其它键必须保留');
+    storage.close();
+  });
+});

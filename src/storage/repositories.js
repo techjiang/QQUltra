@@ -336,9 +336,18 @@ export function createGroupRepo(db) {
       return this.get(groupId);
     },
 
+    /**
+     * 写入一个设置段（如 'antispam' → {autoApprove:true}）。
+     * 段内是深合并而不是整段替换：整段替换会悄悄丢掉同段的其它键，
+     * 例如 setSetting('9527','welcome',{enabled:true}) 会把 welcome.text 抹成默认值，
+     * 而调用方从返回值里根本看不出来（它拿到的是写之后的完整设置）。
+     */
     setSetting(groupId, key, value) {
       const group = this.ensure(groupId);
-      const settings = { ...group.settings, [key]: value };
+      const current = group.settings?.[key];
+      const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+      const merged = isPlainObject(current) && isPlainObject(value) ? { ...current, ...value } : value;
+      const settings = { ...group.settings, [key]: merged };
       db.run('UPDATE groups SET settings = ?, updated_at = ? WHERE group_id = ?', JSON.stringify(settings), Date.now(), String(groupId));
       return this.get(groupId);
     },
