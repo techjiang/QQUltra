@@ -16,7 +16,7 @@
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
-│ 业务：统计 / 检测 / AI / 管理            │  纯逻辑，可脱离 QQ 单测
+│ 业务：统计 / 检测 / AI / 管理 / 面板 / 巡检 │  纯逻辑，可脱离 QQ 单测
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
@@ -53,6 +53,21 @@ engine.commit(message, findings, decision, { executed });    // 留痕
 群消息量级（万到十万行）SQLite 实时聚合完全够用，而预聚合引入的口径不一致风险更大
 （明细与汇总对不上时，很难判断哪个才是真相）。`messages` 是唯一事实来源，`group_members` 只是便捷汇总。
 
+### 管理面板不引入新状态
+
+`/panel` 只是指令的分类投影（`PANEL_SECTIONS`），没有自己的开关或配置。
+因此新增指令只要在面板里登记一行就自动可用，不存在「面板显示的能力和实际能力对不上」。
+`panelCommands()` 让测试能校验「面板里的每条指令都真实存在」。
+
+这也是为什么不做 WebUI：管理需求已经有一个天然宿主（PC 端 QQ 的聊天窗口），
+再维护一个前端等于多一份要同步的状态。
+
+### 主动服务挂在消息路径上
+
+异常预警与每日简报没有独立定时器，而是在群消息处理链末尾检查。
+理由：群里没消息时推送没有意义，且省掉常驻定时器带来的跨进程唤醒与生命周期管理。
+两个服务都必须「低频且可关」——群机器人最讨厌的失败方式不是不回消息，而是天天刷屏。
+
 ## 关键不变量
 
 这些是踩过坑后固定下来的约定，改动时不要破坏：
@@ -67,6 +82,17 @@ engine.commit(message, findings, decision, { executed });    // 留痕
 5. **检测默认值单一来源**：`detect/defaults.js` 是唯一出处，
    群配置与引擎都从这里取，避免两边各写一份导致默认值被挤掉。
 6. **失败降级不崩溃**：订阅者异常被事件总线隔离；处置失败降级为提醒并标记 `degraded`。
+7. **降级不计入升级阶梯**：`countPunished` 排除 `action = 'degraded'`。
+   机器人没权限时动作根本没生效，把它算作一次处罚等于「罚不成功还升级」。
+8. **入群时间独立记录**：`members.markJoined` 与 `upsert` 分开。
+   只在发言时写 `first_seen` 会让「入群时间」变成「首次发言时间」，
+   新人广告检测静默失效且不报错。
+9. **私聊不带群角色**：`canRun` 对私聊一律要求白名单。
+   私聊没有 owner/admin 概念，否则任何人都能私聊执行 `/purge`。
+10. **事件名缺失直接报错**：`bus.emit(payload)` 曾静默什么都不做，
+    表现为「通知处理器好像没生效」。现在抛 TypeError。
+11. **用户输入错误不用异常语气**：参数不合法抛带 `expected: true` 的错误，
+    上层渲染成用法提示而不是「指令执行失败」。
 
 ## 数据模型
 
@@ -78,7 +104,7 @@ engine.commit(message, findings, decision, { executed });    // 留痕
 | `rules` | 自定义规则 | `group_id` 为空表示全局规则 |
 | `violations` | 违规记录 | `kind='punish'` 的行是升级阶梯的计数依据 |
 | `ai_conversations` | 会话记忆 | 写入时按 `maxKeep` 裁剪 |
-| `kv` | 杂项 | 运行状态等 |
+| `kv` | 杂项 | 运行状态、预警冷却、简报订阅与已推送日期 |
 
 迁移按 `MIGRATIONS` 数组顺序执行，已执行的版本记录在 `schema_migrations`。
 **已发布的迁移不再修改，只追加新版本。**
@@ -100,6 +126,22 @@ export function myDetector({ message, text, rules, config, context }) {
 入参契约固定为 `{ message, text, rules, config, context }`，返回 `Finding`、`Finding[]` 或 `null`。
 `config` 在顶层（通用配置），`context` 放跨检测器协作信息（如 `adFinding` 供新人检测复用）。
 检测器顺序有意义，注册到 `BUILTIN_DETECTORS` 时注意依赖关系。
+
+### 加一条群内指令
+
+在 `bot.js` 的 `registerCommands` 里注册，并在 `services/manage/panel.js` 的
+`PANEL_SECTIONS` 登记一行——否则面板里看不到它，测试也会失败。
+
+```js
+commands.register('mytool', {
+  description: '我的工具',
+  level: 'admin',                       // member | admin | owner
+  run: ({ message, storage, args }) => '结果文本',
+});
+```
+
+`run` 返回字符串即回消息（群里回群、私聊回私聊）；返回 `null` 表示自己已经发过了。
+参数不合法时抛带 `expected: true` 的 `Error`，会渲染成用法提示而非「执行失败」。
 
 ### 换 AI 服务
 

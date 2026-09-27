@@ -18,6 +18,12 @@ export const GROUP_SETTINGS_DEFAULTS = {
   detect: DEFAULT_DETECT_CONFIG,
   welcome: { enabled: false, text: '欢迎 {at} 加入本群，请先阅读群规～' },
   antispam: { enabled: true, autoApprove: false },
+  /**
+   * 异常预警：短时间内违规激增时主动提醒管理员。
+   * 阈值定在 5 次/10 分钟——低于这个量级属正常摩擦，逐条提醒等于噪音；
+   * 高于它通常意味着有人在批量灌广告或机器人抓到了突发刷屏。
+   */
+  alert: { enabled: true, threshold: 5, windowMs: 10 * 60_000 },
 };
 
 export function withDefaults(settings = {}) {
@@ -44,6 +50,8 @@ export function describeSettings(settings) {
 /** 支持的配置项白名单，防止 /config set 写进任意键污染 settings。 */
 export const SETTABLE_KEYS = {
   'stats.enabled': 'boolean',
+  'alert.enabled': 'boolean',
+  'alert.threshold': 'number',
   'ai.enabled': 'boolean',
   'ai.trigger': 'enum:mention,prefix,all',
   'ai.prefix': 'string',

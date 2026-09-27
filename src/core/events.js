@@ -30,6 +30,11 @@ export function createEventBus({ logger } = {}) {
   };
 
   const emit = async (event, payload) => {
+    // 事件名写错（例如把 payload 当第一个参数传）在旧实现里是「静默什么都不做」，
+    // 排查起来像业务逻辑失灵。这里直接拒绝，让错误出现在它发生的地方。
+    if (typeof event !== 'string' || event === '') {
+      throw new TypeError('事件总线 emit(event, payload) 缺少事件名');
+    }
     const list = handlers.get(event) ?? [];
     const results = [];
     for (const { handler, name } of list) {

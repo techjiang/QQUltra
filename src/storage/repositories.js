@@ -1,5 +1,3 @@
-import { startOfDay, startOfWeek, startOfMonth } from '../utils/time.js';
-
 /**
  * 消息仓储。所有写路径都收敛在这里，便于统计口径一致：
  * messages 是明细，group_members 是增量汇总，二者必须同事务写入。
@@ -177,6 +175,30 @@ export function createMemberRepo(db) {
     remove(groupId, userId) {
       db.run('DELETE FROM group_members WHERE group_id = ? AND user_id = ?', String(groupId), String(userId));
     },
+
+    /**
+     * 登记「入群」事件。
+     *
+     * 必须独立于 upsert：upsert 是「发过言」才会调用的，只在发言时写 first_seen
+     * 会让「入群时间」变成「第一次发言时间」，新人广告检测（依赖入群 24h 内）
+     * 从此再也命中不了——而且不报错，只是静默失效。
+     *
+     * message_count 保持不动：入群本身不是发言。
+     */
+    markJoined({ groupId, userId, nickname = null, timestamp }) {
+      db.run(
+        `INSERT INTO group_members (group_id, user_id, nickname, first_seen, last_seen, message_count)
+         VALUES (?, ?, ?, ?, ?, 0)
+         ON CONFLICT (group_id, user_id) DO UPDATE SET
+           first_seen = excluded.first_seen,
+           nickname = COALESCE(excluded.nickname, group_members.nickname)`,
+        String(groupId),
+        String(userId),
+        nickname,
+        timestamp,
+        timestamp,
+      );
+    },
   };
 }
 
@@ -327,14 +349,19 @@ export function createViolationRepo(db) {
     },
 
     /**
-     * 已实际执行处罚的次数 —— 这是升级阶梯该用的口径。
+     * 已「落地」的处罚次数 —— 这是升级阶梯该用的口径。
      *
      * 一次刷屏会连命中好几条消息（第 8 条、第 9 条各触发一次），
      * 若按命中条数升级，一次灌水就能把处罚顶到踢出，明显不合预期。
+     *
+     * degraded（机器人权限不足、动作被协议端拒绝）不计入：
+     * 那是执行失败，不是威慑成功，计入等于「罚不成功也升级」。
      */
     countPunished(groupId, userId, since) {
       const row = db.get(
-        "SELECT COUNT(*) AS c FROM violations WHERE group_id = ? AND user_id = ? AND created_at >= ? AND kind = 'punish'",
+        `SELECT COUNT(*) AS c FROM violations
+         WHERE group_id = ? AND user_id = ? AND created_at >= ?
+           AND kind = 'punish' AND action != 'degraded'`,
         String(groupId),
         String(userId),
         since,

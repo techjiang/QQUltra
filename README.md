@@ -1,13 +1,42 @@
+<div align="center">
+
+<img src="src/assets/logo.png" alt="QQUltra" width="180" />
+
 # QQUltra
 
-至尊 QQ 人工智能 · 群聊统计 · 自动化检测 · 群聊信息管理。
+**至尊 QQ 人工智能 · 群聊统计 · 自动化检测 · 群聊信息管理**
 
-QQUltra 是一个常驻 QQ 群的机器人，把四件事做在一个进程里：
+<img src="https://img.shields.io/badge/Node-%E2%89%A522.5-339933?logo=node.js&logoColor=white" alt="node" />
+<img src="https://img.shields.io/badge/dependencies-0-blue" alt="zero deps" />
+<img src="https://img.shields.io/badge/tests-195%20passing-brightgreen" alt="tests" />
+<img src="https://img.shields.io/badge/license-MIT-green" alt="license" />
 
-- **AI 对话** —— 群内 @ 或私聊触发，带多轮记忆，可被指令切换为前缀触发
-- **群聊统计** —— 活跃榜、发言档案、活跃时段分布、环比涨跌
+[作者网站](https://docs.asoe.cn) · [论坛](https://forums.asoe.cn/) · [B 站](https://space.bilibili.com/1768832152) · [GitHub](https://github.com/techjiang/)
+
+</div>
+
+---
+
+QQUltra 是一个常驻 QQ 群的机器人，**在 PC 端 QQ 的聊天窗口里直接使用和管理**，
+不需要切浏览器开面板。四件事做在一个进程里：
+
+- **AI 对话** —— 群内 @ 或私聊触发，带多轮记忆，可切换触发方式
+- **群聊统计** —— 活跃榜、发言档案、活跃时段分布、环比涨跌、词云
 - **自动化检测** —— 刷屏、复读、广告引流、敏感词、灌链接，命中即处置
-- **群聊管理** —— 入群审核、新人欢迎、规则增删、按群独立配置
+- **群聊管理** —— 入群审核、新人欢迎、规则增删、按群独立配置、异常预警、每日简报
+
+## 为什么在 PC 端 QQ 里用
+
+PC 端 QQ 打开的就是聊天窗口，QQUltra 把「管理台」做成了群内消息：
+
+| 方式 | 入口 | 说明 |
+| --- | --- | --- |
+| `/panel` | 群里或私聊机器人 | 一屏列出所有可用指令，**看到即用**，复制粘贴即可执行 |
+| `/panel --img` | 同上 | 面板渲染成图文卡片，长清单不被客户端折叠 |
+| 私聊机器人 | PC 端 QQ 好友列表 | 直接对话式操作，不用进群 |
+| `/status` | 群里 | 运行自检，掉线、检测被关、权限缺失都会点出来 |
+
+不需要额外登录、不需要开浏览器、不需要映射端口。
 
 ## 快速开始
 
@@ -16,14 +45,13 @@ git clone <repo> && cd QQUltra
 node bin/qqultra.js demo        # 离线跑一遍完整链路，不需要 QQ 环境
 ```
 
-`demo` 用内存库 + 模拟适配器，会把「统计采集 → 广告检测 → 刷屏处置 → 指令查询」整条链路走一遍并打印结果，
-用来验证环境是否就绪。
+`demo` 用内存库 + 模拟适配器，把「统计采集 → 广告检测 → 刷屏处置 → 指令查询」整条链路走一遍。
 
 ## 接入真实 QQ
 
-QQUltra 通过 **OneBot 11** 协议与协议端通信，兼容 go-cqhttp、Lagrange、NapCat、LLOneBot 等。
+QQUltra 通过 **OneBot 11** 协议与协议端通信，兼容 NapCat、Lagrange、LLOneBot、go-cqhttp 等。
 
-**1. 准备协议端**，登录机器人 QQ 号，开启 OneBot 11 的 WebSocket。
+**1. 准备协议端**（以 NapCat 为例，装进 PC 端 QQ 即可），登录机器人账号并开启 OneBot 11 的 WebSocket。
 
 **2. 配置 QQUltra**：
 
@@ -65,20 +93,29 @@ node bin/qqultra.js start
 
 ## 指令
 
-群里发送，或私聊机器人。需要管理员权限的指令会校验发送者角色。
+群里发送，或私聊机器人。需要管理员权限的指令会校验发送者角色；
+**私聊里没有群角色，管理指令只认 `permission.whiteList`**（这是刻意的，否则任何人都能私聊清库）。
 
 | 指令 | 权限 | 说明 |
 | --- | --- | --- |
-| `/help` | 所有人 | 指令一览 |
-| `/stats [today\|week\|month\|all]` | 所有人 | 统计报告，可加 `--top=N` |
+| `/help` | 所有人 | 指令一览（也支持中文别名，如 `/菜单`、`/统计`） |
+| `/panel [--img]` | 所有人 | 管理面板，`--img` 出图卡 |
+| `/status` | 所有人 | 运行状态与健康自检 |
+| `/about` | 所有人 | 作者与项目信息 |
+| `/ping` | 所有人 | 存活检查 |
+| `/stats [today\|week\|month\|all]` | 所有人 | 统计报告，可加 `--top=N`，支持 `/stats 本周` |
 | `/rank [周期]` | 所有人 | 活跃榜 |
+| `/wordcloud [周期]` | 所有人 | 词云图（SVG 图片，失败自动退回文本） |
 | `/me` | 所有人 | 我的发言档案 |
 | `/whois @某人` | 所有人 | 查他人档案 |
+| `/history [@某人]` | 所有人 | 最近发言回顾，可加 `--n=5` |
+| `/rules` | 所有人 | 查看生效规则 |
+| `/violations` | 管理员 | 最近违规记录 |
+| `/alert [on\|off\|threshold N]` | 管理员 | 异常预警开关与阈值 |
+| `/subscribe` `/unsubscribe` | 管理员 | 每日简报订阅 |
 | `/ai <问题>` | 所有人 | 问 AI |
 | `/ai-stats [周期]` | 所有人 | 让 AI 解读统计数据 |
 | `/ai-reset` | 所有人 | 清空本会话记忆 |
-| `/rules` | 所有人 | 查看生效规则 |
-| `/ping` | 所有人 | 存活检查 |
 | `/config` / `/config keys` | 管理员 | 查看配置 / 可配置项 |
 | `/config set <键> <值>` | 管理员 | 修改本群配置 |
 | `/rule add\|del\|on\|off` | 管理员 | 维护检测规则 |
@@ -102,6 +139,7 @@ AI 走 **OpenAI 兼容协议**（`/chat/completions`），因此 DeepSeek、通�
 ```
 
 群内触发方式由 `ai.trigger` 控制：`mention`（默认，@ 才回）、`prefix`（`/ai` 开头）、`all`（所有消息）。
+私聊不需要触发词，发什么回什么。
 
 `/ai-stats` 会把真实统计数字注入提示词并要求模型以此为准，避免模型编造群活跃数据。
 
@@ -125,7 +163,8 @@ AI 走 **OpenAI 兼容协议**（`/chat/completions`），因此 DeepSeek、通�
 - **广告用组合信号**：单看联系方式会误伤正常交流，因此要求「联系方式 + 引流动词」同时命中
 - **一次事件一次处置**：一次刷屏会连续命中多条消息，QQUltra 把它折叠成一个事件，不会瞬间把处罚顶到踢出
 - **只升不降的阶梯**：`warn → mute → kick`，管理员白名单内只记录不处置
-- **失败降级**：机器人不是管理员时，处置失败会降级成群内提醒，不中断主循环
+- **执行失败不升级**：机器人不是管理员时，处置降级为群内提醒，且**不计入升级阶梯**——罚不成功不该变本加厉
+- **失败降级**：处置失败不中断主循环
 
 加自定义规则：
 
@@ -133,6 +172,23 @@ AI 走 **OpenAI 兼容协议**（`/chat/completions`），因此 DeepSeek、通�
 /rule add keyword 违禁词 --action=mute
 /rule add regex /广告\s*位/ --action=warn
 ```
+
+## 主动运维
+
+群聊机器人真正的死法是**静默失效**：掉线、权限被撤、检测被关，群里看不出异常，
+直到某天发现统计里少了半个月数据。因此 QQUltra 把「需要人主动问」变成「机器人主动报」：
+
+- **异常预警**：10 分钟内违规超过阈值（默认 5 次）就在群里提醒管理员，30 分钟冷却避免预警本身变成刷屏
+- **每日简报**：订阅后每天首次收到群消息时推送昨日摘要（消息量、活跃人数、环比、风控命中）
+- **`/status` 自检**：逐项检查群状态、数据流入、检测开关、连接新鲜度，任一项异常都会点出来
+
+## 词云
+
+`/wordcloud [周期]` 从群消息里抽高频词，渲染成 SVG 图卡发到群里。
+
+不引第三方分词库（零依赖是硬约束），改用「中文二元切分 + 英文单词 + 停用词过滤」：
+中文靠 bigram 抓「排位」「更新」这类高频组合，精度不如成熟分词但完全确定性、可单测。
+副作用是会产出跨词边界的噪声词（`排位上分` → `位上`），靠 `minCount` 过滤。
 
 ## 群内配置
 
@@ -142,6 +198,7 @@ AI 走 **OpenAI 兼容协议**（`/chat/completions`），因此 DeepSeek、通�
 /config set ai.trigger prefix       # 改用前缀触发
 /config set ai.enabled false        # 关掉本群 AI
 /config set detect.punish.enabled false   # 只检测不处罚
+/config set alert.threshold 10      # 预警阈值调到 10 次
 /config set welcome.enabled true
 /config set welcome.text 欢迎 {at} 进群～
 /config set stats.enabled false      # 本群不统计
@@ -151,9 +208,14 @@ AI 走 **OpenAI 兼容协议**（`/chat/completions`），因此 DeepSeek、通�
 
 ```bash
 node bin/qqultra.js inspect        # 查看生效配置（密钥脱敏）
+node bin/qqultra.js panel          # 预览群内管理面板
+node bin/qqultra.js health         # 运行自检
 node bin/qqultra.js report 123456  # 直接输出某群统计
+node bin/qqultra.js wordcloud 123456 --period=week   # 终端词云
+node bin/qqultra.js digest 123456  # 预览每日简报
 node bin/qqultra.js purge 30       # 清理 30 天前明细
 node bin/qqultra.js start          # 启动机器人
+node bin/qqultra.js about          # 作者与项目信息
 ```
 
 数据存在单个 SQLite 文件（默认 `data/qqultra.db`），按 `stats.retentionDays` 自动清理过期明细。
@@ -168,7 +230,7 @@ node bin/qqultra.js start          # 启动机器人
    ↓ 统一消息实体
 事件总线  顺序派发，单订阅者异常不影响其他订阅者
    ↓
-业务模块  统计采集 / 检测引擎 / AI 会话 / 群管理
+业务模块  统计采集 / 检测引擎 / AI 会话 / 群管理 / 面板 / 巡检
    ↓
 存储层    SQLite：明细表 + 成员汇总 + 规则 + 违规 + 会话
 ```
@@ -180,11 +242,12 @@ node bin/qqultra.js start          # 启动机器人
 src/
 ├── core/         事件总线、适配器契约、Bot 主循环
 ├── adapters/     onebot11（正向/反向）、mock（离线用）
+├── assets/       Logo 与作者信息（唯一来源）
 ├── services/
-│   ├── stats/    采集器、报表生成
+│   ├── stats/    采集器、报表、词云、SVG 渲染
 │   ├── detect/   规则、默认配置、检测引擎
 │   ├── ai/       会话管理、OpenAI 兼容 provider
-│   └── manage/   指令、群配置、处置执行
+│   └── manage/   指令、群配置、处置执行、管理面板、巡检简报
 ├── storage/      数据库、迁移、仓储
 └── utils/        日志、文本归一化、时间
 ```
@@ -192,7 +255,7 @@ src/
 ## 开发
 
 ```bash
-node --test "test/*.test.js"   # 141 个用例
+node --test "test/*.test.js"   # 195 个用例
 npm run demo                   # 离线端到端演示
 ```
 
@@ -201,8 +264,8 @@ npm run demo                   # 离线端到端演示
 
 测试覆盖的三个层次：
 
-- **单元**：文本归一化、时间计算、命令解析、各检测器
-- **模块**：存储事务、统计口径、检测引擎决策、AI 提示词
+- **单元**：文本归一化、时间计算、命令解析、各检测器、切词与排版
+- **模块**：存储事务、统计口径、检测引擎决策、AI 提示词、面板权限、健康自检
 - **端到端**：一条消息从注入到被统计、检测、处置、留痕的完整链路
 
 ## 隐私边界
@@ -211,6 +274,17 @@ npm run demo                   # 离线端到端演示
 - 机器人自身消息不入库
 - 数据只落本地 SQLite，不外传；AI 回复时仅发送当前会话上下文与提问
 - 可用 `stats.enabled: false` 关闭统计，或 `/purge` 清理历史
+
+## 作者
+
+| | |
+| --- | --- |
+| 作者 | 科技酱 |
+| 网站 | <https://docs.asoe.cn> |
+| GitHub | <https://github.com/techjiang/> |
+| 哔哩哔哩 | <https://space.bilibili.com/1768832152> |
+| 玲珑论坛 | <https://forums.asoe.cn/> |
+| QQ 群 | 291974598 / 474819022 |
 
 ## License
 

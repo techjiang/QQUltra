@@ -11,16 +11,29 @@ import { migrate } from '../src/storage/migrations.js';
 import { createStorage } from '../src/storage/repositories.js';
 import { loadConfig, summarizeConfig } from '../src/config.js';
 import { createLogger } from '../src/utils/logger.js';
-import { buildGroupReport, renderReportText } from '../src/services/stats/report.js';
+import { buildGroupReport, renderReportText, resolvePeriod } from '../src/services/stats/report.js';
+import { ASCII_LOGO, renderAboutText, PROJECT, AUTHOR } from '../src/assets/brand.js';
+import { VERSION } from '../src/version.js';
+import { renderPanel } from '../src/services/manage/panel.js';
+import { inspectGroupHealth, renderHealthText, buildDailyDigest } from '../src/services/manage/digest.js';
+import { countWords, renderWordCloudText } from '../src/services/stats/wordcloud.js';
 
-const USAGE = `QQUltra — 至尊QQ人工智能 / 群聊统计 / 自动化检测 / 群聊信息管理
+const USAGE = `${ASCII_LOGO}
+
+${PROJECT.name} v${VERSION} — ${PROJECT.slogan}
+作者 ${AUTHOR.name} · ${AUTHOR.site}
 
 用法：
   qqultra start            启动机器人（连接 OneBot 协议端）
   qqultra demo             离线演示：注入样例消息，展示统计与风控效果
+  qqultra panel [--role=admin]  预览 PC 端 QQ 内的管理面板
   qqultra report <群号>     直接输出某群的统计报告（读本地库）
+  qqultra health [群号]     运行自检并输出健康报告
+  qqultra wordcloud <群号>  在终端生成词云（读本地库）
+  qqultra digest <群号>     预览每日简报内容
   qqultra inspect          查看当前配置（脱敏）
   qqultra purge [天数]      清理过期消息明细
+  qqultra about            作者与项目信息
   qqultra help             显示本帮助
 
 环境变量：
@@ -46,6 +59,22 @@ try {
       break;
     case 'report':
       cmdReport(rest);
+      break;
+    case 'panel':
+      cmdPanel(rest);
+      break;
+    case 'health':
+      cmdHealth(rest);
+      break;
+    case 'wordcloud':
+      cmdWordcloud(rest);
+      break;
+    case 'digest':
+      cmdDigest(rest);
+      break;
+    case 'about':
+      console.log(renderAboutText({ version: VERSION }));
+      console.log('\n' + ASCII_LOGO);
       break;
     case 'inspect':
       cmdInspect();
@@ -78,9 +107,86 @@ function printVersion() {
   const pkgPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
   console.log(`${pkg.name} v${pkg.version} (node ${process.version})`);
+  console.log(`${PROJECT.slogan}`);
+  console.log(`作者 ${AUTHOR.name} · ${AUTHOR.site} · QQ群 ${AUTHOR.qqGroups.join(' / ')}`);
+}
+
+/** 预览 PC 端 QQ 里会看到的管理面板。 */
+function cmdPanel(args) {
+  const role = (args.find((a) => a.startsWith('--role=')) ?? '--role=admin').split('=')[1];
+  const whiteListed = args.includes('--white');
+  console.log(renderPanel({ role, whiteListed, groupName: null }));
+}
+
+function cmdHealth(args) {
+  const groupId = args[0] ?? null;
+  const { storage, config } = openLocalStorage();
+  try {
+    if (groupId) {
+      const health = inspectGroupHealth({
+        storage,
+        groupId,
+        lastReadyAt: storage.kv.get('last_ready_at', null),
+        adapterName: 'onebot11',
+      });
+      console.log(renderHealthText(health));
+      return;
+    }
+    const groups = storage.groups.list();
+    if (groups.length === 0) {
+      console.log('本地库还没有任何群记录，先启动机器人接收消息');
+      return;
+    }
+    console.log(`共 ${groups.length} 个群，数据文件 ${config.dataFile}\n`);
+    for (const g of groups) {
+      const health = inspectGroupHealth({ storage, groupId: g.groupId, lastReadyAt: storage.kv.get('last_ready_at', null) });
+      console.log(`群 ${g.groupId}${g.name ? `（${g.name}）` : ''} → ${health.level}`);
+      for (const c of health.checks.filter((x) => x.level !== 'ok')) console.log(`  · ${c.name}：${c.detail}`);
+    }
+  } finally {
+    storage.close();
+  }
+}
+
+function cmdWordcloud(args) {
+  const groupId = args[0];
+  if (!groupId) {
+    console.error('用法：qqultra wordcloud <群号> [--period=week] [--top=20]');
+    process.exitCode = 1;
+    return;
+  }
+  const period = (args.find((a) => a.startsWith('--period=')) ?? '--period=all').split('=')[1];
+  const top = Number((args.find((a) => a.startsWith('--top=')) ?? '--top=20').split('=')[1]);
+  const { storage } = openLocalStorage();
+  try {
+    const { since, until, label } = resolvePeriod(period);
+    const rows = storage.messages.recentInGroup(groupId, since, 5000).filter((r) => r.created_at < until);
+    const words = countWords(rows.map((r) => r.text), { top, minCount: 2 });
+    console.log(`☁️ ${label}词云（${rows.length} 条消息）\n`);
+    console.log(renderWordCloudText(words, { limit: top }));
+  } finally {
+    storage.close();
+  }
+}
+
+function cmdDigest(args) {
+  const groupId = args[0];
+  if (!groupId) {
+    console.error('用法：qqultra digest <群号>');
+    process.exitCode = 1;
+    return;
+  }
+  const { storage } = openLocalStorage();
+  try {
+    console.log(buildDailyDigest(storage, groupId).text);
+  } finally {
+    storage.close();
+  }
 }
 
 async function cmdStart() {
+  console.log(ASCII_LOGO);
+  console.log(`  ${PROJECT.name} v${VERSION} · 作者 ${AUTHOR.name}\n`);
   const app = await createApp();
   app.logger.info('QQUltra 启动中…');
   app.logger.info(summarizeConfig(app.config));

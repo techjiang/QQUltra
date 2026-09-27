@@ -1,12 +1,35 @@
 # 部署
 
+## 场景：在 PC 端 QQ 里管理
+
+QQUltra 的管理入口就是 QQ 聊天窗口，不需要额外的 Web 服务或端口映射。
+
+**三种用法**
+
+1. **群内面板**：群里发 `/panel`，一屏列出所有可用指令，复制即用；
+   `/panel --img` 出图文卡片，长清单不会被客户端折叠。
+2. **私聊机器人**：PC 端 QQ 好友列表里直接找机器人对话，
+   普通指令立即可用；管理指令需要把自己的 QQ 号写进 `permission.whiteList`。
+3. **状态自检**：`/status` 检查群状态、数据流入、检测开关、连接新鲜度。
+
+**配置白名单**（私聊执行管理指令的前提）
+
+```json
+{ "permission": { "whiteList": ["你的QQ号"] } }
+```
+
+也可以用环境变量：`QQU_PERMISSION__WHITELIST='["123456"]'`
+
+> 白名单是私聊唯一的提权途径。私聊里没有群角色，这是刻意的设计：
+> 否则任何人私聊机器人都能触发 `/purge` 清库。
+
 ## 前置：准备协议端
 
 QQUltra 不实现 QQ 协议本身，只做 OneBot 11 客户端。先选一个协议端并登录机器人账号：
 
 | 协议端 | 说明 |
 | --- | --- |
-| NapCat | 基于 NTQQ，功能全，推荐 |
+| NapCat | 基于 NTQQ，功能全，**可直接装进 PC 端 QQ**，推荐 |
 | Lagrange.Core | 纯协议实现，资源占用低 |
 | LLOneBot | LiteLoaderQQNT 插件形式 |
 | go-cqhttp | 老牌，部分协议已失效 |
@@ -92,8 +115,10 @@ docker run -d --name qqu --restart unless-stopped \
 1. `node bin/qqultra.js inspect` 确认真实生效的配置
 2. 启动后日志出现 `已就绪，机器人 QQ: xxx`
 3. 群里发 `/ping`，应回 `pong`
-4. 发 `/stats`，确认统计可用
-5. 确认机器人有**管理员权限**——否则撤回/禁言/踢人会失败（会自动降级为提醒）
+4. 发 `/panel`，确认面板可见（普通成员不应看到管理项）
+5. 发 `/status`，确认自检全绿
+6. 确认机器人有**管理员权限**——否则撤回/禁言/踢人会失败（会自动降级为提醒，且不计入升级阶梯）
+7. 建议设 `permission.whiteList` 为管理员 QQ 号，便于私聊运维
 
 ## 权限要求
 
@@ -132,3 +157,8 @@ sqlite3 data/qqultra.db \
 | 机器人不撤回/不踢人 | 机器人是否群管理员 |
 | AI 回 `服务暂时不可用` | 用 `QQU_LOGLEVEL=debug` 启动看上游原始错误（常见为 key 无效、余额不足、baseUrl 写错） |
 | 统计条数偏少 | 检查 `/config` 里 `stats.enabled`；指令消息不计入活跃榜属预期 |
+| 私聊管理指令提示需要权限 | 私聊没有群角色，需把 QQ 号写进 `permission.whiteList` |
+| 新人广告从不触发 | 机器人必须在群内且能看到 `group_increase` 通知；用 `/status` 看数据流入 |
+| 词云发的是文本不是图 | 协议端不支持本地文件发送；属预期降级（见日志 debug 级） |
+| 面板里少了几条指令 | 普通成员看不到管理项，属预期；用管理员账号或 `/panel` 自查 |
+| 预警刷屏 | 调高阈值 `/alert threshold 10`，或直接 `/alert off` |

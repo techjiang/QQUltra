@@ -52,6 +52,24 @@ export class Adapter extends EventTarget {
     return this.send('send_private_msg', { user_id: Number(userId), message });
   }
 
+  /**
+   * 发送本地图片。OneBot 11 用 file:// 绝对路径表示本地文件；
+   * Node 内置没有 base64 封装成 data URI 的便捷方式，
+   * 因此统一由适配器决定如何编码，业务层只给路径。
+   */
+  sendGroupImage(groupId, filePath) {
+    return this.sendGroupMessage(groupId, `[CQ:image,file=${toFileUri(filePath)}]`);
+  }
+
+  sendPrivateImage(userId, filePath) {
+    return this.sendPrivateMessage(userId, `[CQ:image,file=${toFileUri(filePath)}]`);
+  }
+
+  /** 设置成员名片（群管理员权限）。 */
+  setGroupCard(groupId, userId, card) {
+    return this.send('set_group_card', { group_id: Number(groupId), user_id: Number(userId), card });
+  }
+
   deleteMessage(messageId) {
     return this.send('delete_msg', { message_id: Number(messageId) });
   }
@@ -103,4 +121,14 @@ export class Adapter extends EventTarget {
   }
 
   async _disconnect() {}
+}
+
+/**
+ * 本地路径 → OneBot 的 file URI。
+ * Windows 的盘符路径（C:\\a\\b.png）必须转成 /C:/a/b.png，否则协议端按相对路径找不到文件。
+ */
+export function toFileUri(filePath) {
+  const normalized = String(filePath).replace(/\\/g, '/');
+  const prefixed = /^[a-zA-Z]:/.test(normalized) ? `/${normalized}` : normalized;
+  return `file://${encodeURI(prefixed)}`;
 }

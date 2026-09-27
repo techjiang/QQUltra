@@ -78,14 +78,30 @@ export function createModerator({ storage, adapter, logger, config = {} }) {
       logger?.info(`入群申请 ${request.userId} → ${approve ? '通过' : '拒绝'}`);
     },
 
-    /** 新人入群自动欢迎 + 可选新人观察期标记。 */
+    /**
+     * 新人入群：登记入群时间 + 可选欢迎语。
+     *
+     * 登记必须先于一切分支执行，且不受 welcome.enabled 影响——
+     * 入群时间是新成员风控的基准，关掉欢迎语不该顺带关掉「新人观察期」。
+     */
     async handleMemberIncrease(notice) {
-      const group = storage.groups.get(notice.groupId);
-      const settings = group?.settings ?? {};
-      if (!settings.welcome?.enabled) return;
+      const { withDefaults } = await import('./group-config.js');
+      const settings = withDefaults(storage.groups.get(notice.groupId)?.settings ?? {});
 
-      const template = settings.welcome.text ?? '欢迎 {at} 加入本群，请先阅读群规～';
-      const text = template.replace('{at}', `[CQ:at,qq=${notice.userId}]`).replace('{nickname}', notice.userId);
+      storage.members.markJoined({
+        groupId: notice.groupId,
+        userId: notice.userId,
+        nickname: notice.senderName ?? null,
+        timestamp: notice.timestamp ?? Date.now(),
+      });
+
+      if (!settings.welcome?.enabled) return;
+      if (settings.welcome.text === '') return;
+
+      const text = settings.welcome.text
+        .replaceAll('{at}', `[CQ:at,qq=${notice.userId}]`)
+        .replaceAll('{nickname}', notice.senderName ?? notice.userId)
+        .replaceAll('{group}', storage.groups.get(notice.groupId)?.name ?? notice.groupId);
       await adapter.sendGroupMessage(notice.groupId, text).catch((err) => logger?.warn(`欢迎语发送失败: ${err.message}`));
     },
   };

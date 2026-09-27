@@ -326,7 +326,10 @@ describe('自动化处置落库与通知', () => {
       await bot.inject({ groupId: '9527', userId: '20003', nickname: '路人甲', text: `刷屏 ${i}` });
     }
     assert.ok(adapter.outbox.some((m) => /自动处置失败/.test(m.message)), '应发出降级提醒');
-    assert.ok(storage.violations.recent('9527').some((v) => v.action === 'degraded'));
+    // 降级也是「已处置」，必须留痕：否则查不到这条记录，也无法解释为什么没禁言成功
+    assert.ok(storage.violations.recent('9527').some((v) => v.kind === 'punish' && v.action === 'degraded'), '降级应写入 punish 记录');
+    // 降级不能算作有效处罚：否则一次权限失败会把升级阶梯白推一级
+    assert.equal(storage.violations.countPunished('9527', '20003', 0), 0);
     storage.close();
   });
 

@@ -122,10 +122,35 @@ describe('命令解析', () => {
     const reg = createCommandRegistry();
     reg.register('public', { run: () => '' });
     reg.register('admin', { level: 'admin', run: () => '' });
-    assert.equal(reg.canRun(reg.get('public'), { role: 'member', userId: '1' }), true);
-    assert.equal(reg.canRun(reg.get('admin'), { role: 'member', userId: '1' }), false);
-    assert.equal(reg.canRun(reg.get('admin'), { role: 'admin', userId: '1' }), true);
-    assert.equal(reg.canRun(reg.get('admin'), { role: 'member', userId: '9' }, { whiteList: ['9'] }), true);
+    const inGroup = (role, userId) => ({ role, userId, isGroup: true });
+    assert.equal(reg.canRun(reg.get('public'), inGroup('member', '1')), true);
+    assert.equal(reg.canRun(reg.get('admin'), inGroup('member', '1')), false);
+    assert.equal(reg.canRun(reg.get('admin'), inGroup('admin', '1')), true);
+    assert.equal(reg.canRun(reg.get('admin'), inGroup('member', '9'), { whiteList: ['9'] }), true);
+  });
+
+  test('私聊没有群角色，管理指令只认白名单', () => {
+    const reg = createCommandRegistry();
+    reg.register('admin', { level: 'admin', run: () => '' });
+    reg.register('owner', { level: 'owner', run: () => '' });
+    const dm = (userId) => ({ role: 'member', userId, isGroup: false });
+    // 私聊里既没有 owner 也没有 admin，任何人都不能凭 role 提权
+    assert.equal(reg.canRun(reg.get('admin'), dm('1')), false);
+    assert.equal(reg.canRun(reg.get('owner'), dm('1')), false);
+    assert.equal(reg.canRun(reg.get('admin'), dm('9'), { whiteList: ['9'] }), true);
+    // 数字与字符串白名单要等价，否则配置写数字就全废
+    assert.equal(reg.canRun(reg.get('admin'), dm('9'), { whiteList: [9] }), true);
+  });
+
+  test('别名解析到主命令，未知命令返回 undefined', () => {
+    const reg = createCommandRegistry();
+    reg.register('stats', { run: () => '' });
+    reg.register('help', { run: () => '' });
+    assert.equal(reg.resolve('统计').name, 'stats');
+    assert.equal(reg.resolve('帮助').name, 'help');
+    assert.equal(reg.resolve('不存在的命令'), undefined);
+    // 别名不重复注册，因此不会在命令列表里出现两次
+    assert.equal(reg.list().length, 2);
   });
 });
 

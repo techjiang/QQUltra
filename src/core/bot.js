@@ -4,26 +4,56 @@ import { createCollector } from '../services/stats/collector.js';
 import { buildGroupReport, renderReportText, buildMemberProfile, renderMemberText, resolvePeriod } from '../services/stats/report.js';
 import { createDetectEngine } from '../services/detect/engine.js';
 import { createModerator } from '../services/manage/moderation.js';
-import { createCommandRegistry, parseCommand, extractMentions } from '../services/manage/commands.js';
+import { createCommandRegistry, parseCommand, extractMentions, COMMAND_PREFIX } from '../services/manage/commands.js';
 import { withDefaults, describeSettings, applySetting, SETTABLE_KEYS } from '../services/manage/group-config.js';
 import { createSessionManager, DEFAULT_PERSONA, buildStatsAnswerPrompt } from '../services/ai/session.js';
 import { createOpenAICompatibleProvider } from '../services/ai/provider.js';
-import { truncate } from '../utils/text.js';
+import { truncate, normalizeText } from '../utils/text.js';
+import { countWords, renderWordCloudText } from '../services/stats/wordcloud.js';
+import { renderPanel } from '../services/manage/panel.js';
+import { inspectGroupHealth, renderHealthText, evaluateAlert, buildDailyDigest } from '../services/manage/digest.js';
+import { renderAboutText, PROJECT } from '../assets/brand.js';
+import { VERSION } from '../version.js';
+import { renderWordCloudSvg, renderPanelSvg } from '../services/stats/wordcloud-svg.js';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { formatDuration } from '../utils/time.js';
 
 const HELP = [
   '🤖 QQUltra 指令一览',
   '/help — 查看帮助',
-  '/stats [today|week|month|all] [--top=N] — 群聊统计报告',
-  '/rank [today|week|month|all] — 活跃榜',
-  '/me — 我的发言档案',
-  '/whois @某人 — 查看成员档案',
-  '/ai <问题> — 问 AI（群里需 @ 机器人）',
-  '/ai-reset — 清空本会话记忆',
-  '/config — 查看本群配置',
-  '/rules — 查看检测规则',
+  '/panel — 打开管理面板（PC 端 QQ 内直接操作）',
+  '/panel --img — 面板以图卡形式发送',
+  '/status — 运行状态与自检',
+  '/about — 作者与项目信息',
   '/ping — 存活检查',
-  '管理员：/config set <键> <值> | /rule add <类型> <内容> [--action=mute] | /rule del <id> | /approve <flag> | /reject <flag> | /purge <天数>',
+  '',
+  '📊 洞察',
+  '/stats [today|week|month|all] [--top=N] — 统计报告',
+  '/rank [周期] — 活跃榜',
+  '/wordcloud [周期] — 词云图',
+  '/me — 我的发言档案',
+  '/whois @某人 — 成员档案',
+  '/history [@某人] — 最近发言回顾',
+  '',
+  '🛡 风控（管理员）',
+  '/rules — 查看检测规则',
+  '/violations — 最近违规记录',
+  '/alert — 异常预警开关',
+  '/rule add <类型> <内容> [--action=mute] | /rule del <id>',
+  '',
+  '⚙️ 运维',
+  '/config — 查看配置 | /config keys 看可配项（管理员）',
+  '/config set <键> <值> — 改配置（管理员）',
+  '/subscribe /unsubscribe — 每日简报（管理员）',
+  '/approve <flag> | /reject <flag> — 入群审核（管理员）',
+  '/purge <天数> — 清理历史（群主）',
+  '',
+  '🤖 AI',
+  '/ai <问题> — 提问（群里需 @ 机器人，私聊直接发）',
+  '/ai-stats [周期] — 让 AI 解读数据',
+  '/ai-reset — 清空会话记忆',
 ].join('\n');
 
 /**
@@ -52,7 +82,6 @@ export function createBot({
         ? createOpenAICompatibleProvider({ ...config.ai, logger })
         : null;
 
-  registerCommands(commands, { storage, config, sessions, aiProvider, logger });
 
   const ctx = {
     config,
@@ -66,8 +95,11 @@ export function createBot({
     commands,
     sessions,
     aiProvider,
+    startedAt: Date.now(),
     stats: { buildGroupReport, renderReportText, buildMemberProfile, renderMemberText, resolvePeriod },
   };
+
+  registerCommands(commands, ctx);
 
   // ---- 事件装配顺序很重要：采集 → 检测 → 处置 → 命令 ----
   bus.on(EVENTS.MESSAGE, (message) => handleMessage(ctx, message));
@@ -76,8 +108,13 @@ export function createBot({
     if (notice.subType === 'group_increase') {
       await moderator.handleMemberIncrease(notice);
     } else if (notice.subType === 'group_decrease') {
-      storage.members.remove(notice.groupId, notice.userId);
-      logger.debug(`成员退群/被踢，已清理汇总: ${notice.groupId}/${notice.userId}`);
+      // OneBot 的 group_decrease 把离开者放在 target_id（operator_id 才是操作者），
+      // 用 userId 会一直拿到 undefined，汇总永远不会被清理。
+      const left = notice.targetId ?? notice.userId;
+      if (left) {
+        storage.members.remove(notice.groupId, left);
+        logger.debug(`成员退群/被踢，已清理汇总: ${notice.groupId}/${left}`);
+      }
     }
   });
 
@@ -148,28 +185,30 @@ export function createBot({
 }
 
 async function handleMessage(ctx, message) {
-  const { storage, logger, collector, detectEngine, moderator, config } = ctx;
+  const { storage, collector, config } = ctx;
+
+  // 私聊走独立路径：没有群统计、没有群风控，只有指令与 AI。
+  // 混进群链路会让 /stats 拿着 null 群号去查库，也会把私聊算进某个群。
+  if (!message.isGroup) {
+    await handlePrivateMessage(ctx, message);
+    return;
+  }
+
   if (!storage.groups.isEnabled(message.groupId)) return;
 
-  const parsed = message.text.startsWith('/') ? parseCommand(message.text) : null;
+  const parsed = message.text.startsWith(COMMAND_PREFIX) ? parseCommand(message.text) : null;
+
+  // 群配置只取一次：下面采集/检测/主动服务都要读，重复 withDefaults 会做无谓的深拷贝
+  const settings = withDefaults(storage.groups.ensure(message.groupId)?.settings ?? {});
 
   // 1. 采集：命令本身也进明细（标记 is_command），但不参与活跃榜口径由报表层处理
-  if (config.stats.enabled) {
-    const group = storage.groups.ensure(message.groupId);
-    if (withDefaults(group?.settings).stats.enabled) collector.record(message);
+  if (config.stats.enabled && settings.stats.enabled) {
+    collector.record(message);
   }
 
   // 2. 检测：命令不走检测，避免管理员用命令时被自己的规则拦下
   if (!parsed) {
-    const { findings, decision } = detectEngine.inspect(message);
-    if (findings.length > 0) {
-      // 同一事件窗口内的重复处置会被 moderator 跳过，
-      // 只有真正执行了才写 punish 事件，避免一次刷屏把升级阶梯顶满
-      const executed = await moderator.apply(message, decision);
-      const didPunish = executed !== 'none' && executed !== 'skipped';
-      detectEngine.commit(message, findings, decision, { executed: didPunish ? executed : null });
-      if (decision.action !== 'none' && decision.action !== 'warn') return;
-    }
+    await runDetection(ctx, message);
   }
 
   // 3. 命令
@@ -178,31 +217,158 @@ async function handleMessage(ctx, message) {
     return;
   }
 
-  // 4. AI 触发
+  // 4. 主动服务：异常预警与每日简报。
+  // 挂在消息路径上而不是独立定时器——群里没消息就没有推送的意义，
+  // 且省掉一个常驻定时器与它带来的跨进程唤醒。
+  await runProactiveServices(ctx, message, settings);
+
+  // 5. AI 触发
   await maybeReplyWithAi(ctx, message);
 }
 
+/**
+ * 主动服务。两个都必须「低频且可关」：
+ * 群机器人最讨人厌的失败方式不是不回消息，而是天天刷屏。
+ */
+async function runProactiveServices(ctx, message, groupSettings) {
+  const { storage, adapter, logger } = ctx;
+
+  // ---- 异常预警 ----
+  const alertConf = groupSettings.alert ?? {};
+  if (alertConf.enabled !== false) {
+    const result = evaluateAlert({
+      storage,
+      groupId: message.groupId,
+      threshold: alertConf.threshold ?? 5,
+      windowMs: alertConf.windowMs ?? 10 * 60_000,
+    });
+    // 冷却：同一群 30 分钟内只提醒一次，避免违规刷屏时预警本身变成刷屏
+    const lastAt = storage.kv.get(`alert_sent:${message.groupId}`, 0);
+    if (result.triggered && Date.now() - lastAt > 30 * 60_000) {
+      storage.kv.set(`alert_sent:${message.groupId}`, Date.now());
+      await adapter
+        .sendGroupMessage(message.groupId, `🚨 异常预警：${result.reason}\n（如需关闭：/alert off）`)
+        .catch((err) => logger.warn(`预警推送失败: ${err.message}`));
+    }
+  }
+
+  // ---- 每日简报 ----
+  const sub = storage.kv.get(`digest_subscribe:${message.groupId}`, null);
+  if (!sub?.enabled) return;
+
+  const today = new Date().setHours(0, 0, 0, 0);
+  const lastDate = storage.kv.get(`digest_sent:${message.groupId}`, 0);
+  if (lastDate >= today) return;
+
+  storage.kv.set(`digest_sent:${message.groupId}`, Date.now());
+  const digest = buildDailyDigest(storage, message.groupId, { now: Date.now() });
+  await adapter
+    .sendGroupMessage(message.groupId, `${digest.text}\n（/unsubscribe 退订）`)
+    .catch((err) => logger.warn(`简报推送失败: ${err.message}`));
+}
+
+/** 检测 → 处置 → 留痕。返回值表示消息是否已被「拦截」（后续不再当作普通消息处理）。 */
+async function runDetection(ctx, message) {
+  const { detectEngine, moderator } = ctx;
+  const { findings, decision } = detectEngine.inspect(message);
+  if (findings.length === 0) return false;
+
+  // 同一事件窗口内的重复处置会被 moderator 跳过，
+  // 只有真正执行了才写 punish 事件，避免一次刷屏把升级阶梯顶满
+  const executed = await moderator.apply(message, decision);
+  const didPunish = executed !== 'none' && executed !== 'skipped';
+  detectEngine.commit(message, findings, decision, { executed: didPunish ? executed : null });
+
+  return executed === 'mute' || executed === 'kick';
+}
+
+/**
+ * 私聊路径。私聊没有角色概念，管理指令一律要求账号在 permission.whiteList 内
+ * （见 commands.canRun），否则任何人都能私聊机器人清空数据。
+ */
+async function handlePrivateMessage(ctx, message) {
+  const { adapter, logger } = ctx;
+  const text = normalizeText(message.text).trim();
+
+  const parsed = text.startsWith(COMMAND_PREFIX) ? parseCommand(text) : null;
+  if (parsed) {
+    await runCommand(ctx, message, parsed);
+    return;
+  }
+
+  // 私聊里没有 @ 目标，直接当作对话（触发方式只在群聊里生效）
+  await replyWithAi(ctx, message, text, { scopeKey: `user:${message.userId}` });
+}
+
 async function runCommand(ctx, message, parsed) {
-  const { commands, storage, adapter, logger, config } = ctx;
-  const spec = commands.get(parsed.name);
+  const { commands, adapter, logger, config } = ctx;
+  const spec = commands.resolve(parsed.name);
   if (!spec) return;
 
+  // 回复一律回到消息来的地方：群里回群、私聊回私聊。
+  // 私聊里调 sendGroupMessage(groupId=null) 会直接抛错，用户看到的只有沉默。
+  const reply = (text) => (message.isGroup ? adapter.sendGroupMessage(message.groupId, text) : adapter.sendPrivateMessage(message.userId, text));
+
   if (!commands.canRun(spec, message, config.permission)) {
-    await adapter.sendGroupMessage(message.groupId, '⛔ 该指令需要管理员权限');
+    await reply('⛔ 该指令需要管理员权限（私聊使用请把 QQ 号加入 permission.whiteList）');
     return;
   }
 
   try {
-    const reply = await spec.run({ ...ctx, message, args: parsed.args, mentions: extractMentions(message.segments) });
-    if (reply) await adapter.sendGroupMessage(message.groupId, reply);
+    const out = await spec.run({ ...ctx, message, args: parsed.args, mentions: extractMentions(message.segments) });
+    if (out) await reply(out);
   } catch (err) {
+    // 用户输入错（周期写错、参数缺）属于可预期的操作失误，直接给出正确用法；
+    // 只有真正的内部错误才打日志并按「执行失败」上报，避免日志被用法错误淹没。
+    if (err.expected || err instanceof TypeError) {
+      logger.debug(`指令 ${parsed.name} 参数不合法: ${err.message}`);
+      await reply(`⚠️ ${err.message}`);
+      return;
+    }
     logger.warn(`指令 ${parsed.name} 执行失败: ${err.message}`);
-    await adapter.sendGroupMessage(message.groupId, `指令执行失败：${err.message}`);
+    await reply(`指令执行失败：${err.message}`);
+  }
+}
+
+/** 触发判定 + 提示词构造 + 回复，群聊与私聊共用。 */
+async function replyWithAi(ctx, message, question, { scopeKey }) {
+  const { aiProvider, sessions, adapter, storage, logger } = ctx;
+  if (!aiProvider) return;
+
+  const group = message.isGroup ? storage.groups.ensure(message.groupId) : null;
+  const settings = withDefaults(group?.settings).ai;
+  if (message.isGroup && !settings.enabled) return;
+
+  if (!question.trim()) {
+    await (message.isGroup
+      ? adapter.sendGroupMessage(message.groupId, '嗯？你想问什么？')
+      : adapter.sendPrivateMessage(message.userId, '嗯？你想问什么？'));
+    return;
+  }
+
+  try {
+    const { messages } = await sessions.buildPrompt(
+      { ...message, text: question },
+      {
+        systemPrompt: ctx.config.ai.systemPrompt ?? DEFAULT_PERSONA,
+        contextLines: message.isGroup ? settings.contextLines : 0,
+      },
+    );
+    // 只有多轮对话才写记忆：一次性问答（/ai）不该污染上下文
+    const answer = await aiProvider.chat(messages);
+    sessions.remember(scopeKey, question, answer.content);
+    const maxLen = message.isGroup ? settings.maxReplyLength : Math.max(settings.maxReplyLength, 800);
+    const text = truncate(answer.content, maxLen);
+    await (message.isGroup ? adapter.sendGroupMessage(message.groupId, text) : adapter.sendPrivateMessage(message.userId, text));
+  } catch (err) {
+    logger.warn(`AI 回复失败: ${err.message}`);
+    const text = `AI 服务暂时不可用，稍后再试（${truncate(err.message, 80)}）`;
+    await (message.isGroup ? adapter.sendGroupMessage(message.groupId, text) : adapter.sendPrivateMessage(message.userId, text));
   }
 }
 
 async function maybeReplyWithAi(ctx, message) {
-  const { aiProvider, sessions, adapter, storage, logger } = ctx;
+  const { aiProvider, adapter, storage } = ctx;
   if (!aiProvider) return;
 
   const group = storage.groups.ensure(message.groupId);
@@ -224,26 +390,10 @@ async function maybeReplyWithAi(ctx, message) {
       ? prompt.slice(settings.prefix.length).trim()
       : prompt;
 
-  if (!question) {
-    await adapter.sendGroupMessage(message.groupId, '嗯？你想问什么？');
-    return;
-  }
-
-  try {
-    const { scopeKey, messages } = await sessions.buildPrompt(
-      { ...message, text: question },
-      { systemPrompt: ctx.config.ai.systemPrompt ?? DEFAULT_PERSONA, contextLines: settings.contextLines },
-    );
-    const answer = await aiProvider.chat(messages);
-    sessions.remember(scopeKey, question, answer.content);
-    await adapter.sendGroupMessage(message.groupId, truncate(answer.content, settings.maxReplyLength));
-  } catch (err) {
-    logger.warn(`AI 回复失败: ${err.message}`);
-    await adapter.sendGroupMessage(message.groupId, 'AI 服务暂时不可用，稍后再试');
-  }
+  await replyWithAi(ctx, message, question, { scopeKey: `group:${message.groupId}` });
 }
 
-function registerCommands(commands, { storage, config, sessions, aiProvider, logger }) {
+function registerCommands(commands, { storage, config, sessions, aiProvider, logger, adapter, startedAt }) {
   commands.register('help', {
     description: '查看帮助',
     run: () => HELP,
@@ -252,6 +402,158 @@ function registerCommands(commands, { storage, config, sessions, aiProvider, log
   commands.register('ping', {
     description: '存活检查',
     run: () => `pong 🏓 运行时长 ${formatDuration(process.uptime() * 1000)}`,
+  });
+
+  commands.register('about', {
+    description: '作者与项目信息',
+    run: () => `${renderAboutText({ version: VERSION })}\n\n数据只落本地 SQLite，不外传。`,
+  });
+
+  commands.register('panel', {
+    description: '管理面板',
+    run: async ({ message, config: cfg, args }) => {
+      const text = renderPanel({
+        role: message.role,
+        whiteListed: (cfg.permission?.whiteList ?? []).map(String).includes(String(message.userId)),
+        groupName: message.isGroup ? (storage.groups.get(message.groupId)?.name ?? null) : null,
+      });
+      // --img：把面板渲染成图文卡片。PC 端 QQ 的聊天窗口对长文本会自动折叠，
+      // 图卡能一屏看完，更适合当「操作台」用。
+      if (args?.flags?.img === undefined) return text;
+      try {
+        const file = join(tmpdir(), `qqu-panel-${message.userId}-${Date.now()}.svg`);
+        mkdirSync(tmpdir(), { recursive: true });
+        writeFileSync(file, renderPanelSvg(text, { title: 'QQUltra 管理面板' }), 'utf8');
+        await (message.isGroup ? adapter.sendGroupImage(message.groupId, file) : adapter.sendPrivateImage(message.userId, file));
+        return null;
+      } catch (err) {
+        logger.debug(`面板图卡发送失败，退回文本: ${err.message}`);
+        return text;
+      }
+    },
+  });
+
+  commands.register('status', {
+    description: '运行状态与自检',
+    run: ({ message }) => {
+      const lastReadyAt = storage.kv.get('last_ready_at', null);
+      const health = inspectGroupHealth({
+        storage,
+        groupId: message.groupId,
+        lastReadyAt,
+        adapterName: adapter?.name ?? 'unknown',
+      });
+      const lines = [
+        `🛰 ${PROJECT.name} v${VERSION} | 运行 ${formatDuration(Date.now() - (startedAt ?? Date.now()))}`,
+        `适配器 ${adapter?.name ?? 'unknown'} | 机器人 ${adapter?.selfId ?? '未知'}`,
+        `数据库 ${config.dataFile}`,
+      ];
+      return [...lines, '', renderHealthText(health)].join('\n');
+    },
+  });
+
+  commands.register('wordcloud', {
+    description: '词云图',
+    run: async ({ message, args, storage: s, adapter: ad }) => {
+      const period = args.positional[0] ?? 'week';
+      const { since, until, label } = resolvePeriod(period, message.timestamp);
+      const rows = s.messages.recentInGroup(message.groupId, since, 2000).filter((r) => r.created_at < until);
+      const words = countWords(rows.map((r) => r.text), { top: 20, minCount: 2 });
+      if (words.length === 0) return `${label}语料不足，无法生成词云`;
+
+      const header = `☁️ ${label}词云（${rows.length} 条消息 / ${words.length} 个高频词）`;
+      // 先尝试渲染成图片发出去，失败就退回纯文本——不退化的炫技等于故障
+      try {
+        const svg = renderWordCloudSvg(words, { title: `${label}群聊词云` });
+        const file = join(tmpdir(), `qqu-wordcloud-${message.groupId}-${Date.now()}.svg`);
+        mkdirSync(tmpdir(), { recursive: true });
+        writeFileSync(file, svg, 'utf8');
+        await (message.isGroup ? ad.sendGroupImage(message.groupId, file) : ad.sendPrivateImage(message.userId, file));
+        return null;
+      } catch (err) {
+        logger.debug(`词云图片发送失败，退回文本: ${err.message}`);
+        return `${header}\n${renderWordCloudText(words)}`;
+      }
+    },
+  });
+
+  commands.register('history', {
+    description: '最近发言回顾',
+    run: ({ message, mentions, args, storage: s }) => {
+      const target = mentions[0] ?? args.positional.find((p) => /^\d+$/.test(p)) ?? null;
+      const limit = Math.min(Number(args.flags.n ?? 5) || 5, 20);
+      if (target) {
+        const rows = s.messages.lastMessages(message.groupId, target, limit);
+        if (rows.length === 0) return `没有找到 ${target} 的发言记录`;
+        return [`🕓 ${target} 最近 ${rows.length} 条发言`, ...rows.map((r) => `· ${truncate(r.text, 60)}`)].join('\n');
+      }
+      const rows = s.messages.recentInGroup(message.groupId, Date.now() - 24 * 3600_000, limit);
+      if (rows.length === 0) return '近 24 小时没有群消息记录';
+      return ['🕓 近 24 小时最新发言', ...rows.map((r) => `${r.nickname || r.user_id}：${truncate(r.text, 50)}`)].join('\n');
+    },
+  });
+
+  commands.register('violations', {
+    description: '最近违规记录',
+    level: 'admin',
+    run: ({ message, storage: s, args }) => {
+      const rows = s.violations.recent(message.groupId, Math.min(Number(args.flags.n ?? 10) || 10, 30));
+      if (rows.length === 0) return '✅ 最近没有任何违规记录';
+      return [
+        `🚨 最近 ${rows.length} 条违规`,
+        ...rows.map((v) => {
+          const at = new Date(v.created_at).toLocaleString('zh-CN', { hour12: false });
+          return `· ${at} ${v.user_id} [${v.kind}] →${v.action ?? '记录'} ${truncate(v.detail ?? '', 40)}`;
+        }),
+      ].join('\n');
+    },
+  });
+
+  commands.register('alert', {
+    description: '异常预警',
+    level: 'admin',
+    run: ({ message, args, storage: s }) => {
+      const sub = args.positional[0];
+      const group = s.groups.ensure(message.groupId);
+      const current = withDefaults(group.settings).alert;
+      if (sub === 'on' || sub === 'off') {
+        const { settings } = applySetting(group, 'alert.enabled', sub === 'on' ? 'true' : 'false');
+        s.db.run('UPDATE groups SET settings = ?, updated_at = ? WHERE group_id = ?', JSON.stringify(settings), Date.now(), String(message.groupId));
+        return `🔔 异常预警已${sub === 'on' ? '开启' : '关闭'}`;
+      }
+      if (sub === 'threshold') {
+        const n = Number(args.positional[1]);
+        if (!Number.isInteger(n) || n < 1) return '用法：/alert threshold <正整数>';
+        const { settings } = applySetting(group, 'alert.threshold', String(n));
+        s.db.run('UPDATE groups SET settings = ?, updated_at = ? WHERE group_id = ?', JSON.stringify(settings), Date.now(), String(message.groupId));
+        return `🔔 预警阈值已设为 ${n} 次/10 分钟`;
+      }
+      const live = evaluateAlert({ storage: s, groupId: message.groupId, threshold: current.threshold });
+      return [
+        `🔔 异常预警：${current.enabled ? '开' : '关'}`,
+        `阈值：${current.threshold} 次 / ${Math.round(current.windowMs / 60000)} 分钟`,
+        `当前窗口命中：${live.count} 次${live.triggered ? '（已触发）' : ''}`,
+        '用法：/alert on | /alert off | /alert threshold 5',
+      ].join('\n');
+    },
+  });
+
+  commands.register('subscribe', {
+    description: '订阅每日简报',
+    level: 'admin',
+    run: ({ message, storage: s }) => {
+      s.kv.set(`digest_subscribe:${message.groupId}`, { enabled: true, since: Date.now() });
+      return '📮 已订阅每日简报，机器人会在每天首次收到消息时推送昨日摘要（/unsubscribe 退订）';
+    },
+  });
+
+  commands.register('unsubscribe', {
+    description: '退订每日简报',
+    level: 'admin',
+    run: ({ message, storage: s }) => {
+      s.kv.set(`digest_subscribe:${message.groupId}`, { enabled: false, since: Date.now() });
+      return '📮 已退订每日简报';
+    },
   });
 
   commands.register('stats', {

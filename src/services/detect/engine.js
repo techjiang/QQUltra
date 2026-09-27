@@ -110,7 +110,8 @@ export function createDetectEngine({ storage, logger, config: globalConfig = {} 
           if (f.ruleId) storage.rules.bumpHit(f.ruleId);
         }
 
-        // executed 有值代表这次真的执行了处置，写一条事件记录供升级阶梯计数
+        // executed 有值代表这次「走完了处置流程」，写一条事件记录供审计；
+        // 但只有真正落地的动作才算升级阶梯的计数依据（见 countPunished）。
         if (executed) {
           storage.violations.add({
             groupId: message.groupId,

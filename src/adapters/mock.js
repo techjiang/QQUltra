@@ -27,7 +27,10 @@ export class MockAdapter extends Adapter {
 
   async _send(action, params) {
     this.actions.push({ action, params });
-    if (action === 'send_group_msg') this.outbox.push({ groupId: String(params.group_id), message: params.message });
+    // 群与私聊都进 outbox：私聊回复也曾因为只记录群消息而在测试里「看不见」，
+    // 导致「私聊没回复」的假象。outbox 必须忠实反映实际发出的所有消息。
+    if (action === 'send_group_msg') this.outbox.push({ groupId: String(params.group_id), message: params.message, scope: 'group' });
+    if (action === 'send_private_msg') this.outbox.push({ userId: String(params.user_id), message: params.message, scope: 'private' });
     if (action === 'get_login_info') return { user_id: Number(this.selfId), nickname: 'QQUltra' };
     if (action === 'get_group_member_list') return [];
     return { status: 'ok' };

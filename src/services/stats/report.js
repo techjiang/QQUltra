@@ -9,9 +9,41 @@ export const PERIODS = {
   all: { label: '全部', start: () => 0 },
 };
 
+export const PERIOD_NAMES = Object.keys(PERIODS);
+
+/** 中文与常见缩写归一化，让 /stats 本周、/rank 周 都能用。 */
+const PERIOD_ALIASES = {
+  all: 'all',
+  全部: 'all',
+  总: 'all',
+  累计: 'all',
+  day: 'today',
+  now: 'today',
+  今: 'today',
+  week: 'week',
+  周: 'week',
+  本周: 'week',
+  这周: 'week',
+  month: 'month',
+  月: 'month',
+  本月: 'month',
+  这个月: 'month',
+};
+
+/**
+ * 周期解析。
+ * 非法周期不再抛异常：异常会被上层渲染成「指令执行失败：...」，
+ * 对群成员来说这是恐吓式的提示，直接返回带正确用法的错误更友好。
+ */
 export function resolvePeriod(period = 'today', now = Date.now()) {
-  const spec = PERIODS[period];
-  if (!spec) throw new Error(`未知统计周期: ${period}（可选 ${Object.keys(PERIODS).join('/')}）`);
+  const key = PERIOD_ALIASES[String(period).toLowerCase()] ?? String(period);
+  const spec = PERIODS[key];
+  if (!spec) {
+    const err = new Error(`未知统计周期「${period}」，可选：${PERIOD_NAMES.join(' / ')}`);
+    err.expected = true;
+    throw err;
+  }
+  period = key;
   // until 取右开区间上界：+1 让「本毫秒内刚落库的消息」也算进本期。
   // 否则刚发的消息与查询同处一毫秒时会被排除，表现为统计偶发少一条。
   return { key: period, label: spec.label, since: spec.start(now), until: now + 1 };
