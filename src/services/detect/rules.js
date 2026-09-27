@@ -161,13 +161,50 @@ export const BUILTIN_DETECTORS = [
   longTextDetector,
 ];
 
-/** 动作升级：同一用户违规次数越多，处置越重。 */
+/**
+ * 动作升级阶梯：同一用户违规次数越多，处置越重。
+ *
+ * 注意阶梯只是「上限」，不是「目标」——计算出的动作还必须满足
+ * 动作权重的单调约束，见 escalateAction。
+ */
 export const ACTION_LADDER = ['warn', 'warn', 'mute', 'mute', 'kick'];
 
-export function escalateAction(baseAction, violationCount, ladder = ACTION_LADDER) {
-  const idx = Math.min(violationCount, ladder.length - 1);
-  const escalated = ladder[idx];
-  if (baseAction === 'kick') return 'kick';
-  if (baseAction === 'mute' && escalated === 'warn') return 'mute';
-  return escalated;
+/** 动作权重，用于比较两个动作谁更重（none < warn < mute < kick）。 */
+export const ACTION_WEIGHT = { none: 0, warn: 1, mute: 2, kick: 3 };
+
+/**
+ * 动作升级：同一用户违规次数越多，处置越重，但**不得越过该违规本身的严重度**。
+ *
+ * 曾经只做「取阶梯值 + 特判 kick/mute」，于是每类违规都能被升到顶：
+ * 复读的默认动作是 warn（且 repeat 没有 action 配置项），
+ * 但第 4 次事件照样会算出 kick，等于「复读 4 次就被踢掉」。
+ * 运营配 warn 是在说「这件事提醒一下就好」，升级不该推翻这个判断。
+ *
+ * 规则：先取阶梯值，再把它夹进 [baseAction, ceil] 区间：
+ * - baseAction=warn, ceil 缺省 → 永远 warn（重复违规不加重）
+ * - baseAction=warn, ceil=mute → 累犯最多升到 mute，不会再往上
+ * - baseAction=mute, ceil=kick → 累犯可升到 kick
+ * - baseAction=kick            → 本来就在顶
+ *
+ * ceil 只能抬高上限、不能压低起点：mute 类违规即使第 0 次也不能被降成 warn。
+ * 需要「累犯加重」的场景显式给出 ceil，见 DEFAULT_DETECT_CONFIG.punish.escalateCeil。
+ */
+export function escalateAction(baseAction, violationCount, { ladder = ACTION_LADDER, ceil = null } = {}) {
+  if (baseAction === 'none' || baseAction === undefined) return 'none';
+  const base = ACTION_WEIGHT[baseAction] ?? ACTION_WEIGHT.warn;
+  // ceil 缺省时上限就是自身动作，即「不因累犯而加重」
+  const max = Math.max(base, ceil === null ? base : ACTION_WEIGHT[ceil] ?? base);
+
+  const idx = Math.max(0, Math.min(violationCount, ladder.length - 1));
+  const target = ACTION_WEIGHT[ladder[idx] ?? baseAction] ?? ACTION_WEIGHT.none;
+
+  // 夹逼：[base, max] 内的阶梯值；越过上限回落到上限，低于起点回落到起点
+  if (target > max) return weightToAction(max);
+  if (target < base) return baseAction;
+  return weightToAction(target);
+}
+
+/** 权重反查动作名，供 escalateAction 夹逼后回写。 */
+function weightToAction(weight) {
+  return Object.entries(ACTION_WEIGHT).find(([, w]) => w === weight)?.[0] ?? 'warn';
 }

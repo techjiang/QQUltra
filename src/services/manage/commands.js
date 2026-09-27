@@ -16,10 +16,25 @@ export function parseCommand(text, { prefix = COMMAND_PREFIX } = {}) {
   const rest = parts.slice(1);
 
   const args = { positional: [], flags: {} };
-  for (const token of rest) {
+  for (let i = 0; i < rest.length; i += 1) {
+    const token = rest[i];
     const flag = /^--([a-zA-Z][\w-]*)(?:=(.*))?$/.exec(token);
     if (flag) {
-      args.flags[flag[1]] = flag[2] ?? true;
+      if (flag[2] !== undefined) {
+        args.flags[flag[1]] = flag[2];
+      } else {
+        // 支持 `--n 2` 这种空格分隔写法：下一个 token 若不是新的旗标，
+        // 就当作本旗标的值。曾经只认 `--n=2`，空格写法会得到 `true`，
+        // 而 Number(true) === 1，于是 /violations --n 2 只显示 1 条、
+        // /rank --top 5 变成 top=1，且不报任何错。
+        const next = rest[i + 1];
+        if (next !== undefined && !next.startsWith('--')) {
+          args.flags[flag[1]] = next;
+          i += 1;
+        } else {
+          args.flags[flag[1]] = true;
+        }
+      }
       continue;
     }
     const at = /^\[CQ:at,qq=(\d+)\]$/.exec(token);

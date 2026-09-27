@@ -8,7 +8,7 @@
 
 <img src="https://img.shields.io/badge/Node-%E2%89%A522.5-339933?logo=node.js&logoColor=white" alt="node" />
 <img src="https://img.shields.io/badge/dependencies-0-blue" alt="zero deps" />
-<img src="https://img.shields.io/badge/tests-195%20passing-brightgreen" alt="tests" />
+<img src="https://img.shields.io/badge/tests-208%20passing-brightgreen" alt="tests" />
 <img src="https://img.shields.io/badge/license-MIT-green" alt="license" />
 
 [作者网站](https://docs.asoe.cn) · [论坛](https://forums.asoe.cn/) · [B 站](https://space.bilibili.com/1768832152) · [GitHub](https://github.com/techjiang/)
@@ -255,7 +255,7 @@ src/
 ## 开发
 
 ```bash
-node --test "test/*.test.js"   # 195 个用例
+node --test "test/*.test.js"   # 208 个用例
 npm run demo                   # 离线端到端演示
 ```
 

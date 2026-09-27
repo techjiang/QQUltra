@@ -113,11 +113,28 @@ describe('检测规则单元', () => {
   });
 
   test('处罚阶梯随违规次数升级但有上限', () => {
+    // 显式给 ceil 时才允许加重到该上限
+    assert.equal(escalateAction('warn', 0, { ceil: 'kick' }), 'warn');
+    assert.equal(escalateAction('warn', 2, { ceil: 'kick' }), 'mute');
+    assert.equal(escalateAction('warn', 99, { ceil: 'kick' }), 'kick');
+    assert.equal(escalateAction('kick', 0, { ceil: 'kick' }), 'kick', 'kick 不会被降级');
+    assert.equal(escalateAction('mute', 0, { ceil: 'kick' }), 'mute', 'mute 不会被降级成 warn');
+  });
+
+  test('未给上限的动作不会因累犯而加重', () => {
+    // 回归：原先 escalateAction 无条件取阶梯值，任何动作类型都能被顶到 kick。
+    // 复读的默认动作是 warn，运营配 warn 就是「提醒一下」的意思，
+    // 但复读几次后照样被踢出，且 repeat 根本没有 action 配置项可调。
     assert.equal(escalateAction('warn', 0), 'warn');
-    assert.equal(escalateAction('warn', 2), 'mute');
-    assert.equal(escalateAction('warn', 99), 'kick');
-    assert.equal(escalateAction('kick', 0), 'kick', 'kick 不会被降级');
-    assert.equal(escalateAction('mute', 0), 'mute', 'mute 不会被降级成 warn');
+    assert.equal(escalateAction('warn', 99), 'warn', 'warn 类违规不应被加重');
+    assert.equal(escalateAction('mute', 99), 'mute', 'mute 类未给上限时不应升到 kick');
+    assert.equal(escalateAction('none', 99), 'none', 'none 不参与升级');
+  });
+
+  test('上限只能压低结果，不能把起点也压下去', () => {
+    // mute 类违规第 0 次仍应是 mute，不能被 ceil 夹成 warn
+    assert.equal(escalateAction('mute', 0, { ceil: 'warn' }), 'mute');
+    assert.equal(escalateAction('kick', 0, { ceil: 'warn' }), 'kick');
   });
 });
 
@@ -237,6 +254,42 @@ describe('检测引擎与群配置', () => {
     }
     assert.equal(storage.violations.countPunished('9527', '20001', 0), 5, '每次独立违规记一次事件');
     assert.deepEqual(seen, ['mute', 'mute', 'mute', 'mute', 'kick']);
+    storage.close();
+  });
+
+  test('各类违规的升级上限按类型封顶，warn 类不会被顶到踢出', () => {
+    const storage = makeStorage();
+    storage.groups.ensure('9527');
+    const engine = createDetectEngine({ storage });
+    const config = mergeConfig(DEFAULT_DETECT_CONFIG, mergeConfig({}, withDefaults({}).detect));
+    const m = msg();
+    const act = (kind, action, priorCount) => engine.decide([{ kind, action }], { config, message: m, priorCount }).action;
+
+    // 回归：原先任何动作类型都能被阶梯顶到 kick，
+    // 于是「复读」这种默认只 warn 的违规，第 4 次事件就被踢出，
+    // 而运营既没有配置项、也无从察觉这条升级路径。
+    assert.equal(act('repeat', 'warn', 9), 'mute', '复读最多升到 mute');
+    assert.equal(act('long_text', 'warn', 9), 'warn', '超长文本不加重');
+    assert.equal(act('link', 'warn', 9), 'warn', '灌链接不加重');
+    // mute 类的升级能力必须保留：刷屏/广告累犯后升到踢出
+    assert.equal(act('flood', 'mute', 9), 'kick', '刷屏累犯升到踢出');
+    assert.equal(act('ad', 'mute', 9), 'kick', '广告累犯升到踢出');
+    // kick 类本来就在顶
+    assert.equal(act('newbie_shill', 'kick', 0), 'kick', '新人广告始终踢出');
+    // 上限不能被用来把起点压低
+    assert.equal(act('flood', 'mute', 0), 'mute', '第 0 次不应被降成 warn');
+    storage.close();
+  });
+
+  test('未在 escalateCeil 中列出的类型视为不加重', () => {
+    const storage = makeStorage();
+    storage.groups.ensure('9527');
+    const engine = createDetectEngine({ storage });
+    const config = mergeConfig(DEFAULT_DETECT_CONFIG, mergeConfig({}, withDefaults({}).detect));
+    // 关键词规则的动作由运营自定，没有默认上限 → 不应被自动加重
+    const m = msg();
+    const decision = engine.decide([{ kind: 'keyword', action: 'warn' }], { config, message: m, priorCount: 9 });
+    assert.equal(decision.action, 'warn');
     storage.close();
   });
 

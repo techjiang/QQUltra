@@ -168,4 +168,86 @@ describe('存储层', () => {
     assert.equal(storage.rules.list('9527').filter((r) => r.enabled).length, 0);
     storage.close();
   });
+
+  const addAt = (storage, { userId, kind, detail, action, createdAt }) => {
+    storage.db.run(
+      'INSERT INTO violations (group_id, user_id, rule_id, kind, detail, action, created_at) VALUES (?, ?, NULL, ?, ?, ?, ?)',
+      '9527', String(userId), kind, detail, action, createdAt,
+    );
+  };
+
+  test('incidents 把一次违规的多条痕迹聚成一个事件', () => {
+    const storage = makeStorage();
+    storage.groups.ensure('9527');
+    const t = Date.now() - 10_000;
+    // 一次广告违规会产生 3 行：两个命中的检测器 + 一条 punish 摘要
+    addAt(storage, { userId: '20009', kind: 'ad', detail: '疑似引流广告', action: 'kick', createdAt: t });
+    addAt(storage, { userId: '20009', kind: 'newbie_shill', detail: '新成员引流', action: 'kick', createdAt: t });
+    addAt(storage, { userId: '20009', kind: 'punish', detail: '疑似引流广告；新成员引流', action: 'kick', createdAt: t });
+
+    const incidents = storage.violations.incidents('9527', 10);
+    // 回归：按行返回会让 --n 10 的 /violations 只装得下 3 次真实违规，
+    // 且同一次违规重复出现三遍
+    assert.equal(incidents.length, 1, '3 行痕迹应聚成 1 次事件');
+    assert.deepEqual(incidents[0].kinds.sort(), ['ad', 'newbie_shill']);
+    assert.equal(incidents[0].action, 'kick');
+    storage.close();
+  });
+
+  test('incidents 能合并跨毫秒的命中行与处置摘要', () => {
+    const storage = makeStorage();
+    storage.groups.ensure('9527');
+    const t = Date.now() - 10_000;
+    // 回归：命中行在 commit 事务里逐条写，punish 摘要随后写，
+    // 两者跨毫秒是常态（实测约 1/6 概率差 1ms）。
+    // 原先用「时间戳完全相等」判断，导致同一次违规时而合并、时而拆成两条。
+    addAt(storage, { userId: '20009', kind: 'ad', detail: 'x', action: 'kick', createdAt: t });
+    addAt(storage, { userId: '20009', kind: 'newbie_shill', detail: 'y', action: 'kick', createdAt: t });
+    addAt(storage, { userId: '20009', kind: 'punish', detail: 'x；y', action: 'kick', createdAt: t + 1 });
+
+    const incidents = storage.violations.incidents('9527', 10);
+    assert.equal(incidents.length, 1, '跨 1ms 的同一次违规必须合并');
+    assert.deepEqual(incidents[0].kinds.sort(), ['ad', 'newbie_shill']);
+    storage.close();
+  });
+
+  test('incidents 不会把不同用户或相隔较远的违规合并', () => {
+    const storage = makeStorage();
+    storage.groups.ensure('9527');
+    const t = Date.now() - 600_000;
+    // 不同用户在同一毫秒：不能互相吞并
+    addAt(storage, { userId: '20009', kind: 'ad', detail: 'a', action: 'kick', createdAt: t });
+    addAt(storage, { userId: '20010', kind: 'ad', detail: 'b', action: 'kick', createdAt: t });
+    // 同一用户但相隔 5 分钟：是两次独立事件
+    addAt(storage, { userId: '20009', kind: 'ad', detail: 'c', action: 'kick', createdAt: t + 300_000 });
+    assert.equal(storage.violations.incidents('9527', 10).length, 3);
+    storage.close();
+  });
+
+  test('incidents 区分同用户的不同事件，且 honor limit', () => {
+    const storage = makeStorage();
+    storage.groups.ensure('9527');
+    const base = Date.now() - 600_000;
+    for (let i = 0; i < 5; i += 1) {
+      const t = base + i * 60_000;
+      addAt(storage, { userId: '20009', kind: 'ad', detail: `第${i}次`, action: 'mute', createdAt: t });
+      addAt(storage, { userId: '20009', kind: 'punish', detail: `第${i}次`, action: 'mute', createdAt: t });
+    }
+    assert.equal(storage.violations.incidents('9527', 10).length, 5, '5 个时间戳 = 5 次事件');
+    assert.equal(storage.violations.incidents('9527', 2).length, 2, 'limit 应被遵守');
+    storage.close();
+  });
+
+  test('incidents 覆盖未走处置流程的命中（无 punish 锚点）', () => {
+    const storage = makeStorage();
+    storage.groups.ensure('9527');
+    const t = Date.now() - 10_000;
+    // 处罚关闭 / 白名单场景只有命中行，没有 punish
+    addAt(storage, { userId: '20001', kind: 'flood', detail: '仅记录', action: 'none', createdAt: t });
+    const incidents = storage.violations.incidents('9527', 10);
+    assert.equal(incidents.length, 1);
+    assert.equal(incidents[0].action, 'none');
+    assert.deepEqual(incidents[0].kinds, ['flood']);
+    storage.close();
+  });
 });

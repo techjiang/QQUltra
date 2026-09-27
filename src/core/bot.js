@@ -497,13 +497,17 @@ function registerCommands(commands, { storage, config, sessions, aiProvider, log
     description: '最近违规记录',
     level: 'admin',
     run: ({ message, storage: s, args }) => {
-      const rows = s.violations.recent(message.groupId, Math.min(Number(args.flags.n ?? 10) || 10, 30));
+      const want = Math.min(Number(args.flags.n ?? 10) || 10, 30);
+      // 按「事件」展示而不是按「命中行」：一次广告会命中 ad + newbie_shill 并写一条 punish 摘要，
+      // 按行展示会让 --n 10 只装得下 3 次真实违规，且同一事件重复出现三遍。
+      const rows = s.violations.incidents(message.groupId, want);
       if (rows.length === 0) return '✅ 最近没有任何违规记录';
       return [
-        `🚨 最近 ${rows.length} 条违规`,
+        `🚨 最近 ${rows.length} 次违规`,
         ...rows.map((v) => {
-          const at = new Date(v.created_at).toLocaleString('zh-CN', { hour12: false });
-          return `· ${at} ${v.user_id} [${v.kind}] →${v.action ?? '记录'} ${truncate(v.detail ?? '', 40)}`;
+          const at = new Date(v.createdAt).toLocaleString('zh-CN', { hour12: false });
+          const kinds = v.kinds.length ? v.kinds.join('+') : '记录';
+          return `· ${at} ${v.userId} [${kinds}] →${v.action} ${truncate(v.detail, 40)}`;
         }),
       ].join('\n');
     },

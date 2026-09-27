@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { makeBot } from './helpers.js';
 import { withDefaults, applySetting, coerceSetting, describeSettings, SETTABLE_KEYS } from '../src/services/manage/group-config.js';
-import { extractMentions } from '../src/services/manage/commands.js';
+import { extractMentions, parseCommand } from '../src/services/manage/commands.js';
 
 describe('群配置', () => {
   test('缺省设置补全全部默认段', () => {
@@ -67,6 +67,35 @@ describe('管理指令', () => {
     await bot.inject({ groupId: '9527', userId, nickname: '群主', role, text });
     return { reply: adapter.lastReply(), storage, adapter, bot, close: () => storage.close() };
   };
+
+  test('旗标支持 --flag value 与 --flag=value 两种写法', () => {
+    // 回归：原先只认 `--flag=value`，`/violations --n 2` 会把 `2` 当位置参数、
+    // 同时把 flags.n 置为 true。由于 Number(true) === 1，
+    // `/violations --n 2` 静默地只显示 1 条，`/rank --top 5` 变成 top=1。
+    assert.deepEqual(parseCommand('/violations --n 2').args.flags, { n: '2' });
+    assert.deepEqual(parseCommand('/violations --n=2').args.flags, { n: '2' });
+    assert.deepEqual(parseCommand('/rank --top 5').args.flags, { top: '5' });
+    assert.deepEqual(parseCommand('/violations --n 2').args.positional, [], '取值后不应再进位置参数');
+    // 布尔旗标仍要能用（后面没有值时不能把下一条指令吃掉）
+    assert.deepEqual(parseCommand('/panel --img').args.flags, { img: true });
+    assert.deepEqual(parseCommand('/violations --n').args.flags, { n: true });
+    // 带值的旗标后面还能跟位置参数
+    const rule = parseCommand('/rule add keyword x --action kick');
+    assert.deepEqual(rule.args.positional, ['add', 'keyword', 'x']);
+    assert.equal(rule.args.flags.action, 'kick');
+  });
+
+  test('/rank --top 5 真的返回 5 人（空格写法生效）', async () => {
+    const { bot, storage, adapter } = await makeBot();
+    for (let i = 0; i < 8; i += 1) {
+      await bot.inject({ groupId: '9527', userId: String(20000 + i), nickname: `用户${i}`, text: '你好' });
+    }
+    adapter.clearOutbox();
+    await bot.inject({ groupId: '9527', userId: '29999', nickname: '群主', role: 'owner', text: '/rank --top 5' });
+    const entries = adapter.lastReply().split('\n').filter((l) => /^\d+\./.test(l));
+    assert.equal(entries.length, 5, '应返回 5 人而不是 1 人');
+    storage.close();
+  });
 
   test('/help 列出主要指令', async () => {
     const { reply, close } = await run('/help');
@@ -259,6 +288,35 @@ describe('群管理与通知', () => {
     storage.groups.setEnabled('9527', false);
     await bot.inject({ groupId: '9527', userId: '29999', role: 'owner', text: '/ping' });
     assert.equal(adapter.lastReply(), null);
+    storage.close();
+  });
+
+  test('/violations 按事件展示，一条违规只占一行', async () => {
+    const { bot, storage, adapter } = await makeBot();
+    // 一次广告会把 ad + newbie_shill 都命中，并额外写一条 punish 摘要
+    await bot.inject({ groupId: '9527', userId: '20009', nickname: '卖茶小妹', text: '加我微信 abc12345，兼职日结' });
+    adapter.clearOutbox();
+    await bot.inject({ groupId: '9527', userId: '29999', nickname: '群主', role: 'owner', text: '/violations' });
+
+    const lines = adapter.lastReply().split('\n');
+    // 回归：原先按 violations 表的行返回，一次违规显示 3 行，
+    // 且 --n 10 只能装下 3 次真实违规
+    assert.equal(lines[0], '🚨 最近 1 次违规', '应提示「次」而不是「条」');
+    assert.equal(lines.length, 2, '标题 + 1 行事件');
+    assert.match(lines[1], /\[newbie_shill\+ad\]/);
+    storage.close();
+  });
+
+  test('/violations --n 限制的是事件数而不是行数', async () => {
+    const { bot, storage, adapter } = await makeBot();
+    for (const [uid, name] of [['20009', '甲'], ['20010', '乙'], ['20011', '丙']]) {
+      await bot.inject({ groupId: '9527', userId: uid, nickname: name, text: '加我微信 abc12345，兼职日结' });
+    }
+    adapter.clearOutbox();
+    await bot.inject({ groupId: '9527', userId: '29999', nickname: '群主', role: 'owner', text: '/violations --n 2' });
+    const lines = adapter.lastReply().split('\n');
+    assert.equal(lines[0], '🚨 最近 2 次违规');
+    assert.equal(lines.length, 3);
     storage.close();
   });
 

@@ -1,5 +1,5 @@
 import { normalizeText } from '../../utils/text.js';
-import { escalateAction, BUILTIN_DETECTORS, RULE_TYPES } from './rules.js';
+import { escalateAction, ACTION_WEIGHT, BUILTIN_DETECTORS, RULE_TYPES } from './rules.js';
 import { withDefaults } from '../manage/group-config.js';
 import { DEFAULT_DETECT_CONFIG } from './defaults.js';
 
@@ -75,9 +75,17 @@ export function createDetectEngine({ storage, logger, config: globalConfig = {} 
       }
 
       // 取最重的动作：一条消息可能同时命中多条规则，按最严处置
-      const weight = { none: 0, warn: 1, mute: 2, kick: 3 };
-      const top = findings.reduce((acc, f) => (weight[f.action] > weight[acc] ? f.action : acc), 'none');
-      const finalAction = punish.escalate ? escalateAction(top, priorCount) : top;
+      const top = findings.reduce((acc, f) => (ACTION_WEIGHT[f.action] > ACTION_WEIGHT[acc] ? f.action : acc), 'none');
+      // 升级上限按「命中类型」查表，取本次命中里最高的那个上限。
+      // 不按动作统一给上限，是因为同类动作的违规严重度并不相同：
+      // 刷屏是 mute 且累犯可加重到踢出，而复读同样是 warn/mute 级别，
+      // 但它的默认动作就是 warn，加重到踢出等于推翻了运营的配置意图。
+      const ceilTable = punish.escalateCeil ?? {};
+      const ceil = findings.reduce((acc, f) => {
+        const c = ceilTable[f.kind] ?? f.action;
+        return ACTION_WEIGHT[c] > ACTION_WEIGHT[acc] ? c : acc;
+      }, 'none');
+      const finalAction = punish.escalate ? escalateAction(top, priorCount, { ceil }) : top;
 
       return {
         action: finalAction,

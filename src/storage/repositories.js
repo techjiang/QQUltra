@@ -386,6 +386,79 @@ export function createViolationRepo(db) {
       return db.all('SELECT * FROM violations WHERE group_id = ? ORDER BY created_at DESC LIMIT ?', String(groupId), limit);
     },
 
+    /**
+     * 按「事件」聚合的近期违规，供 /violations 展示。
+     *
+     * 一次违规会在 violations 里留多条痕迹：每个命中的检测器一条（如 ad + newbie_shill），
+     * 外加一条 kind='punish' 的处置摘要。直接按 kind 折叠仍然会留下「摘要」那一行，
+     * 而且跟明细在同一时间戳上重复显示，管理员看到的是「一次违规=3 行」。
+     *
+     * 这里以 kind='punish' 作为事件锚点（它只在真正走完处置流程时写入），
+     * 把同一用户在紧邻时间内的命中明细合并成一条事件，
+     * 未走到处置的命中（warn / 处罚关闭 / 白名单）没有 punish 锚点，单独作为一条。
+     *
+     * 合并窗口而不是「时间戳完全相等」：命中行在 commit 事务里逐条写入，
+     * punish 摘要在其后写入，两者跨毫秒是常态（实测约 1/6 的概率落后 1ms）。
+     * 用相等判断会让同一次违规时而合并、时而拆成两条，表现为 /violations 偶发多一行。
+     *
+     * @param {number} mergeWindowMs 命中行与处置摘要的最大时间差，默认 1 秒
+     * @returns {{ userId:string, createdAt:number, kinds:string[], action:string, detail:string }[]}
+     */
+    incidents(groupId, limit = 20, { mergeWindowMs = 1000 } = {}) {
+      // 多取一些原始行：一次事件最多占 3 行，避免 limit 被明细行吃掉
+      const rows = db.all(
+        'SELECT * FROM violations WHERE group_id = ? ORDER BY created_at DESC, id DESC LIMIT ?',
+        String(groupId),
+        Math.max(limit * 4, 60),
+      );
+      const incidents = [];
+      const used = new Set();
+
+      // 先按 punish 锚点聚事件（punish 只写一次，代表「这次真的处置了」）
+      for (const anchor of rows.filter((r) => r.kind === 'punish')) {
+        if (used.has(anchor.id)) continue;
+        // 命中行可能比 punish 摘要早一两毫秒，按窗口而不是相等来判断
+        const sameEvent = rows.filter(
+          (r) =>
+            !used.has(r.id) &&
+            r.kind !== 'punish' &&
+            r.user_id === anchor.user_id &&
+            Math.abs(anchor.created_at - r.created_at) <= mergeWindowMs,
+        );
+        for (const r of sameEvent) used.add(r.id);
+        used.add(anchor.id);
+        incidents.push({
+          userId: anchor.user_id,
+          createdAt: anchor.created_at,
+          kinds: sameEvent.map((r) => r.kind),
+          action: anchor.action ?? 'none',
+          detail: anchor.detail ?? '',
+        });
+        if (incidents.length >= limit) break;
+      }
+
+      // 剩下的命中没有处置流程（仅记录/告警），按用户 + 邻近时间折叠成事件
+      if (incidents.length < limit) {
+        for (const r of rows) {
+          if (used.has(r.id)) continue;
+          const existing = incidents.find(
+            (i) => i.userId === r.user_id && Math.abs(i.createdAt - r.created_at) <= mergeWindowMs,
+          );
+          if (existing) {
+            if (!existing.kinds.includes(r.kind)) existing.kinds.push(r.kind);
+            existing.detail ||= r.detail ?? '';
+            used.add(r.id);
+            continue;
+          }
+          used.add(r.id);
+          incidents.push({ userId: r.user_id, createdAt: r.created_at, kinds: [r.kind], action: r.action ?? 'none', detail: r.detail ?? '' });
+          if (incidents.length >= limit) break;
+        }
+      }
+
+      return incidents.sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
+    },
+
     purgeBefore(ts) {
       return Number(db.run('DELETE FROM violations WHERE created_at < ?', ts).changes ?? 0);
     },
